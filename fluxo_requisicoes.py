@@ -221,6 +221,11 @@ def _itens_para_mecanico(itens: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return saida
 
 
+def itens_requisicao_sem_precos(itens: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Remove preços e referências de catálogo dos itens (visão restrita do mecânico)."""
+    return _itens_para_mecanico(itens)
+
+
 def _itens_para_responsavel(itens: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Responsável vê todos os itens ativos/pendentes, inclusive exclusão pendente."""
     saida: list[dict[str, Any]] = []

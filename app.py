@@ -227,6 +227,7 @@ from fluxo_requisicoes import (
     marcar_requisicao_aprovada_se_assinada,
     marcar_requisicao_vista,
     obter_requisicao,
+    itens_requisicao_sem_precos,
     resolver_status_exibicao_lista_os,
     resumo_requisicoes_por_os,
     salvar_requisicao,
@@ -254,11 +255,13 @@ from permissoes_arvore_os import (
     modulos_visiveis_de_permissoes,
     modulo_pre_orcamentos_apenas_explicito,
     tem_permissao_pre_orcamentos_explicita,
+    tem_permissoes_explicitas_salvas,
     normalizar_permissoes_granulares,
     permissoes_efetivas_usuario,
     permissoes_granulares_vazias,
     permissoes_padrao_usuario_os,
     permissoes_template_por_modelo,
+    permissoes_template_restaurar_por_modelo,
     serializar_permissoes_granulares,
     usuario_tem_permissao_granular,
 )
@@ -1833,28 +1836,43 @@ def _sincronizar_perfis_usuarios_existentes(conn: sqlite3.Connection) -> None:
     rows = conn.execute(
         "SELECT id, perfil, perfil_id, permissoes_granulares, controle_abas_ativo FROM usuarios"
     ).fetchall()
+    _init_app_os_config(conn)
+    row_mig = conn.execute(
+        "SELECT valor FROM app_os_config WHERE chave = ?",
+        (_CHAVE_MIG_PERFIS_GRANULAR_V1,),
+    ).fetchone()
+    migracao_inicial_pendente = not (
+        row_mig is not None and _config_bool(row_mig["valor"], padrao=False)
+    )
     for row in rows:
         uid = int(row["id"])
-        modelo = str(row["perfil"] or "operador").strip().lower()
+        modelo_coluna = str(row["perfil"] or "operador").strip().lower()
         perfil_id = row["perfil_id"]
+        modelo = modelo_coluna
         if not perfil_id:
-            perfil = buscar_perfil_app_por_modelo(conn, modelo)
+            perfil = buscar_perfil_app_por_modelo(conn, modelo_coluna)
             if perfil is not None:
                 perfil_id = int(perfil["id"])
                 conn.execute(
                     "UPDATE usuarios SET perfil_id = ? WHERE id = ?",
                     (perfil_id, uid),
                 )
-        if modelo != "admin":
-            conn.execute(
-                "UPDATE usuarios SET permissao_config = 0 WHERE id = ?",
-                (uid,),
-            )
+        if perfil_id:
+            perfil_vinculado = buscar_perfil_app_por_id(conn, int(perfil_id))
+            if perfil_vinculado is not None:
+                modelo = str(perfil_vinculado["modelo_base"] or modelo_coluna).strip().lower()
+        if modelo_coluna != "admin":
             gran_raw = row["permissoes_granulares"]
-            explicitas = chaves_explicitas_permissoes(gran_raw)
-            gran = normalizar_permissoes_granulares(gran_raw)
-            if not explicitas:
-                gran = permissoes_template_por_modelo(modelo)
+            if migracao_inicial_pendente and not tem_permissoes_explicitas_salvas(gran_raw):
+                if perfil_id:
+                    perfil_ref = buscar_perfil_app_por_id(conn, int(perfil_id))
+                    gran = (
+                        permissoes_do_perfil_app(perfil_ref)
+                        if perfil_ref is not None
+                        else permissoes_template_por_modelo(modelo)
+                    )
+                else:
+                    gran = permissoes_template_por_modelo(modelo)
                 conn.execute(
                     """
                     UPDATE usuarios
@@ -1863,15 +1881,23 @@ def _sincronizar_perfis_usuarios_existentes(conn: sqlite3.Connection) -> None:
                     """,
                     (serializar_permissoes_granulares(gran), uid),
                 )
-            elif not _config_bool(row["controle_abas_ativo"], padrao=False):
+            elif tem_permissoes_explicitas_salvas(gran_raw) and not _config_bool(
+                row["controle_abas_ativo"], padrao=False
+            ):
                 conn.execute(
                     "UPDATE usuarios SET controle_abas_ativo = 1 WHERE id = ?",
                     (uid,),
                 )
+    if migracao_inicial_pendente:
+        conn.execute(
+            "INSERT OR REPLACE INTO app_os_config (chave, valor) VALUES (?, ?)",
+            (_CHAVE_MIG_PERFIS_GRANULAR_V1, "1"),
+        )
     _migrar_pre_orcamentos_sem_padrao_nao_admin(conn)
 
 
 _CHAVE_MIG_PRE_ORC_SEM_PADRAO = "migracao_pre_orc_sem_padrao_v4"
+_CHAVE_MIG_PERFIS_GRANULAR_V1 = "migracao_perfis_granular_v1"
 
 
 def _migrar_pre_orcamentos_sem_padrao_nao_admin(conn: sqlite3.Connection) -> None:
@@ -2033,6 +2059,7 @@ def _usuario_para_json(row: sqlite3.Row | None) -> dict[str, Any] | None:
         "permissao_sandbox_treinamento": permissao_sandbox_treinamento,
         "controle_abas_ativo": controle_abas_ativo,
         "permissoes_granulares": permissoes_granulares,
+        "permissoes_granulares_raw": gran_raw,
         "telespectador_alvos": alvos,
     }
 
@@ -2275,16 +2302,57 @@ def _validar_senha_admin_ou_rotacao(usuario: dict[str, Any], senha: str) -> tupl
     return False, msg
 
 
+def _controle_abas_efetivo_usuario(usuario: dict[str, Any] | None) -> bool:
+    if not usuario or _usuario_e_admin(usuario):
+        return False
+    if _config_bool(usuario.get("controle_abas_ativo"), padrao=False):
+        return True
+    salvo_raw = usuario.get("permissoes_granulares_raw")
+    if tem_permissoes_explicitas_salvas(salvo_raw):
+        return True
+    return any(normalizar_permissoes_granulares(usuario.get("permissoes_granulares")).values())
+
+
+def _mecanico_legado_sem_granular(usuario: dict[str, Any] | None) -> bool:
+    """Mecânico ainda regido pelas regras antigas (sem árvore granular ativa)."""
+    return _usuario_e_mecanico(usuario) and not _controle_abas_efetivo_usuario(usuario)
+
+
+def _mecanico_visao_campo(usuario: dict[str, Any] | None) -> bool:
+    """Mecânico no fluxo restrito (só seus dados). Com granular amplo, age como responsável."""
+    if not _usuario_e_mecanico(usuario):
+        return False
+    if _mecanico_legado_sem_granular(usuario):
+        return True
+    if (
+        _usuario_tem_permissao(usuario, "requisicoes_os_responder")
+        or _usuario_tem_permissao(usuario, "requisicoes_os_liberar_estoque")
+        or _usuario_tem_permissao(usuario, "requisicoes_interna_finalizar_interna")
+        or _usuario_tem_permissao(usuario, "lista_os_geral_atribuir_mecanico")
+    ):
+        return False
+    return True
+
+
 def _permissoes_efetivas_usuario(usuario: dict[str, Any] | None) -> dict[str, bool]:
     if not usuario:
         return permissoes_granulares_vazias()
     modelo = _modelo_base_usuario(usuario)
-    controle = _config_bool(usuario.get("controle_abas_ativo"), padrao=modelo != "admin")
+    raw = usuario.get("permissoes_granulares_raw")
+    fonte = usuario.get("permissoes_granulares")
+    controle = _controle_abas_efetivo_usuario(usuario)
+    if not tem_permissoes_explicitas_salvas(raw):
+        gran_perfil = usuario.get("permissoes_perfil_app")
+        if gran_perfil and any(gran_perfil.values()):
+            fonte = gran_perfil
+            raw = serializar_permissoes_granulares(gran_perfil)
+            controle = True
     return permissoes_efetivas_usuario(
-        usuario.get("permissoes_granulares"),
+        fonte,
         controle_abas_ativo=controle,
         perfil=_perfil_usuario(usuario),
         modelo_base=modelo,
+        permissoes_raw=raw,
     )
 
 
@@ -2599,13 +2667,17 @@ def _usuario_e_atendente_ou_superior(usuario: dict[str, Any] | None) -> bool:
 def _usuario_pode_ver_todas_os(usuario: dict[str, Any] | None) -> bool:
     if not usuario:
         return not _exigir_login_efetivo()
-    return not _usuario_e_mecanico(usuario)
+    if not _usuario_e_mecanico(usuario):
+        return True
+    if _mecanico_legado_sem_granular(usuario):
+        return False
+    return not _mecanico_visao_campo(usuario)
 
 
 def _usuario_pode_atribuir_mecanico(usuario: dict[str, Any] | None) -> bool:
     if usuario is None and not _exigir_login_efetivo():
         return True
-    if _usuario_e_mecanico(usuario):
+    if _mecanico_legado_sem_granular(usuario):
         return False
     if _usuario_e_admin(usuario):
         return True
@@ -2615,6 +2687,8 @@ def _usuario_pode_atribuir_mecanico(usuario: dict[str, Any] | None) -> bool:
         "pre_orcamentos_",
         "ordem_os_",
     )
+    if _usuario_e_mecanico(usuario):
+        return bool(gran.get("lista_os_geral_atribuir_mecanico"))
     return any(
         bool(ativo) and any(chave.startswith(p) for p in prefixes)
         for chave, ativo in gran.items()
@@ -2623,7 +2697,7 @@ def _usuario_pode_atribuir_mecanico(usuario: dict[str, Any] | None) -> bool:
 
 def _usuario_pode_gerenciar_requisicoes(usuario: dict[str, Any] | None) -> bool:
     """Qualquer ação de responsável em requisições além de só visualizar."""
-    if _usuario_e_mecanico(usuario):
+    if _mecanico_legado_sem_granular(usuario):
         return False
     if _usuario_e_admin(usuario):
         return True
@@ -2715,26 +2789,26 @@ def _negar_sem_permissao_atualizar_precos_pre(
 
 
 def _usuario_pode_ver_cadastros_clientes(usuario: dict[str, Any] | None) -> bool:
-    if _usuario_e_mecanico(usuario):
-        return False
     if not usuario or not _usuario_acesso_restrito(usuario):
         return True
+    if _mecanico_legado_sem_granular(usuario):
+        return False
     return _usuario_tem_permissao(usuario, "cadastros_clientes_visualizar")
 
 
 def _usuario_pode_criar_cadastros_clientes(usuario: dict[str, Any] | None) -> bool:
-    if _usuario_e_mecanico(usuario):
-        return False
     if not usuario or not _usuario_acesso_restrito(usuario):
         return True
+    if _mecanico_legado_sem_granular(usuario):
+        return False
     return _usuario_tem_permissao(usuario, "cadastros_clientes_criar")
 
 
 def _usuario_pode_editar_cadastros_clientes(usuario: dict[str, Any] | None) -> bool:
-    if _usuario_e_mecanico(usuario):
-        return False
     if not usuario or not _usuario_acesso_restrito(usuario):
         return True
+    if _mecanico_legado_sem_granular(usuario):
+        return False
     return _usuario_tem_permissao(usuario, "cadastros_clientes_editar")
 
 
@@ -2745,8 +2819,6 @@ def _usuario_pode_buscar_clientes_contexto(usuario: dict[str, Any] | None) -> bo
         return not _exigir_login_efetivo()
     if not _usuario_acesso_restrito(usuario):
         return True
-    if _usuario_e_mecanico(usuario):
-        return False
     gran = _permissoes_efetivas_usuario(usuario)
     return bool(
         gran.get("ordem_os_geral_visualizar")
@@ -2760,26 +2832,26 @@ def _usuario_pode_buscar_clientes_contexto(usuario: dict[str, Any] | None) -> bo
 
 
 def _usuario_pode_ver_cadastros_motores(usuario: dict[str, Any] | None) -> bool:
-    if _usuario_e_mecanico(usuario):
-        return False
     if not usuario or not _usuario_acesso_restrito(usuario):
         return True
+    if _mecanico_legado_sem_granular(usuario):
+        return False
     return _usuario_tem_permissao(usuario, "cadastros_motores_visualizar")
 
 
 def _usuario_pode_criar_cadastros_motores(usuario: dict[str, Any] | None) -> bool:
-    if _usuario_e_mecanico(usuario):
-        return False
     if not usuario or not _usuario_acesso_restrito(usuario):
         return True
+    if _mecanico_legado_sem_granular(usuario):
+        return False
     return _usuario_tem_permissao(usuario, "cadastros_motores_criar")
 
 
 def _usuario_pode_editar_cadastros_motores(usuario: dict[str, Any] | None) -> bool:
-    if _usuario_e_mecanico(usuario):
-        return False
     if not usuario or not _usuario_acesso_restrito(usuario):
         return True
+    if _mecanico_legado_sem_granular(usuario):
+        return False
     return _usuario_tem_permissao(usuario, "cadastros_motores_editar")
 
 
@@ -2791,10 +2863,10 @@ def _usuario_pode_buscar_motores_contexto(usuario: dict[str, Any] | None) -> boo
 
 
 def _usuario_pode_ver_cadastros_pecas(usuario: dict[str, Any] | None) -> bool:
-    if _usuario_e_mecanico(usuario):
-        return False
     if not usuario or not _usuario_acesso_restrito(usuario):
         return True
+    if _mecanico_legado_sem_granular(usuario):
+        return False
     return _usuario_tem_permissao(usuario, "cadastros_pecas_visualizar")
 
 
@@ -2811,26 +2883,26 @@ def _usuario_pode_editar_cadastros_pecas(usuario: dict[str, Any] | None) -> bool
 
 
 def _usuario_pode_ver_cadastros_servicos(usuario: dict[str, Any] | None) -> bool:
-    if _usuario_e_mecanico(usuario):
-        return False
     if not usuario or not _usuario_acesso_restrito(usuario):
         return True
+    if _mecanico_legado_sem_granular(usuario):
+        return False
     return _usuario_tem_permissao(usuario, "cadastros_servicos_visualizar")
 
 
 def _usuario_pode_criar_cadastros_servicos(usuario: dict[str, Any] | None) -> bool:
-    if _usuario_e_mecanico(usuario):
-        return False
     if not usuario or not _usuario_acesso_restrito(usuario):
         return True
+    if _mecanico_legado_sem_granular(usuario):
+        return False
     return _usuario_tem_permissao(usuario, "cadastros_servicos_criar")
 
 
 def _usuario_pode_editar_cadastros_servicos(usuario: dict[str, Any] | None) -> bool:
-    if _usuario_e_mecanico(usuario):
-        return False
     if not usuario or not _usuario_acesso_restrito(usuario):
         return True
+    if _mecanico_legado_sem_granular(usuario):
+        return False
     return _usuario_tem_permissao(usuario, "cadastros_servicos_editar")
 
 
@@ -2926,10 +2998,69 @@ def _enriquecer_itens_requisicao_catalogo(itens: list[dict[str, Any]]) -> None:
         pass
 
 
-def _enriquecer_requisicao_catalogo(req: dict[str, Any], *, visao: str) -> None:
+def _enriquecer_requisicao_catalogo(
+    req: dict[str, Any],
+    *,
+    visao: str,
+    usuario: dict[str, Any] | None = None,
+) -> None:
     if visao == "mecanico":
         return
+    if _usuario_e_mecanico(usuario) and not _usuario_mecanico_pode_ver_precos_pecas(usuario):
+        return
     _enriquecer_itens_requisicao_catalogo(req.get("itens") or [])
+
+
+def _usuario_mecanico_pode_ver_precos_pecas(usuario: dict[str, Any] | None) -> bool:
+    """Mecânico só vê valores de peças com permissão explícita na árvore."""
+    if not usuario:
+        return not _exigir_login_efetivo()
+    if not _usuario_e_mecanico(usuario):
+        return True
+    if _mecanico_legado_sem_granular(usuario):
+        return False
+    return _usuario_tem_permissao(usuario, "requisicoes_os_ver_precos_pecas")
+
+
+def _usuario_pode_ver_precos_catalogo_requisicoes(usuario: dict[str, Any] | None) -> bool:
+    if not _usuario_e_mecanico(usuario):
+        return (
+            _usuario_pode_editar_requisicoes_os(usuario)
+            or _usuario_pode_responder_requisicoes_os(usuario)
+            or _usuario_pode_editar_requisicoes_interna(usuario)
+            or _usuario_pode_ver_preco_catalogo_pre_orcamentos(usuario)
+        )
+    if _usuario_pode_ver_preco_catalogo_pre_orcamentos(usuario):
+        return True
+    if not _usuario_mecanico_pode_ver_precos_pecas(usuario):
+        return False
+    return (
+        _usuario_pode_editar_requisicoes_os(usuario)
+        or _usuario_pode_responder_requisicoes_os(usuario)
+        or _usuario_pode_editar_requisicoes_interna(usuario)
+    )
+
+
+def _ocultar_precos_requisicao_para_mecanico(
+    req: dict[str, Any] | None,
+    usuario: dict[str, Any] | None,
+) -> None:
+    if not req or not _usuario_e_mecanico(usuario):
+        return
+    if _usuario_mecanico_pode_ver_precos_pecas(usuario):
+        return
+    req["itens"] = itens_requisicao_sem_precos(req.get("itens") or [])
+
+
+def _preparar_requisicao_resposta(
+    req: dict[str, Any],
+    usuario: dict[str, Any] | None,
+    *,
+    visao: str | None = None,
+) -> None:
+    vis = visao if visao is not None else _visao_fluxo_usuario(usuario)
+    _enriquecer_requisicao_catalogo(req, visao=vis, usuario=usuario)
+    _ocultar_precos_requisicao_para_mecanico(req, usuario)
 
 
 def _enriquecer_pre_requisicao_mecanico(
@@ -3083,7 +3214,7 @@ def _usuario_pode_ver_fotos_os(usuario: dict[str, Any] | None) -> bool:
         if not usuario or not _usuario_acesso_restrito(usuario):
             return True
         return modulo_tem_alguma_permissao(
-            _permissoes_granulares_usuario(usuario),
+            _permissoes_efetivas_usuario(usuario),
             ("fotos_os_geral_enviar", "fotos_os_geral_visualizar"),
         )
     if not _usuario_pode_ver_todas_os(usuario):
@@ -3093,7 +3224,7 @@ def _usuario_pode_ver_fotos_os(usuario: dict[str, Any] | None) -> bool:
     if not usuario or not _usuario_acesso_restrito(usuario):
         return True
     return modulo_tem_alguma_permissao(
-        _permissoes_granulares_usuario(usuario),
+        _permissoes_efetivas_usuario(usuario),
         ("fotos_os_geral_visualizar",),
     )
 
@@ -3106,7 +3237,7 @@ def _usuario_pode_acao_fotos_os(
         if not usuario or not _usuario_acesso_restrito(usuario):
             return True
         return modulo_tem_alguma_permissao(
-            _permissoes_granulares_usuario(usuario),
+            _permissoes_efetivas_usuario(usuario),
             chaves,
         )
     if not _usuario_pode_ver_fotos_os(usuario):
@@ -3163,14 +3294,16 @@ def _usuario_pode_ver_requisicoes_os_responsavel(usuario: dict[str, Any] | None)
 
 
 def _usuario_pode_ver_requisicoes_interna(usuario: dict[str, Any] | None) -> bool:
-    if _usuario_e_mecanico(usuario):
-        return False
-    if not _usuario_pode_ver_todas_os(usuario):
-        return False
     if not _usuario_modulo_visivel(usuario, "requisicao"):
         return False
     if not usuario or not _usuario_acesso_restrito(usuario):
         return True
+    if _usuario_e_mecanico(usuario):
+        if not _controle_abas_efetivo_usuario(usuario):
+            return False
+        return _usuario_tem_permissao(usuario, "requisicoes_interna_visualizar")
+    if not _usuario_pode_ver_todas_os(usuario):
+        return False
     return _usuario_tem_permissao(usuario, "requisicoes_interna_visualizar")
 
 
@@ -3184,7 +3317,7 @@ def _usuario_pode_acao_req_os(
         if not usuario or not _usuario_acesso_restrito(usuario):
             return True
         return modulo_tem_alguma_permissao(
-            _permissoes_granulares_usuario(usuario),
+            _permissoes_efetivas_usuario(usuario),
             chaves,
         )
     if not _usuario_pode_ver_requisicoes_os_responsavel(usuario):
@@ -3192,7 +3325,7 @@ def _usuario_pode_acao_req_os(
     if not usuario or not _usuario_acesso_restrito(usuario):
         return True
     return modulo_tem_alguma_permissao(
-        _permissoes_granulares_usuario(usuario),
+        _permissoes_efetivas_usuario(usuario),
         chaves,
     )
 
@@ -3201,16 +3334,19 @@ def _usuario_pode_acao_req_interna(
     usuario: dict[str, Any] | None,
     *chaves: str,
 ) -> bool:
-    if _usuario_e_mecanico(usuario):
-        return False
-    if not _usuario_pode_ver_requisicoes_interna(usuario):
+    if not _usuario_modulo_visivel(usuario, "requisicao"):
         return False
     if not usuario or not _usuario_acesso_restrito(usuario):
         return True
-    return modulo_tem_alguma_permissao(
-        _permissoes_granulares_usuario(usuario),
-        chaves,
-    )
+    if _usuario_e_mecanico(usuario):
+        if not _controle_abas_efetivo_usuario(usuario):
+            return False
+        gran = _permissoes_efetivas_usuario(usuario)
+        return modulo_tem_alguma_permissao(gran, chaves)
+    if not _usuario_pode_ver_requisicoes_interna(usuario):
+        return False
+    gran = _permissoes_efetivas_usuario(usuario)
+    return modulo_tem_alguma_permissao(gran, chaves)
 
 
 def _usuario_pode_criar_requisicoes_os(usuario: dict[str, Any] | None) -> bool:
@@ -3228,13 +3364,13 @@ def _usuario_pode_enviar_requisicoes_os(usuario: dict[str, Any] | None) -> bool:
 
 
 def _usuario_pode_responder_requisicoes_os(usuario: dict[str, Any] | None) -> bool:
-    if _usuario_e_mecanico(usuario):
+    if _mecanico_legado_sem_granular(usuario):
         return False
     return _usuario_pode_acao_req_os(usuario, "requisicoes_os_responder")
 
 
 def _usuario_pode_liberar_estoque_requisicoes_os(usuario: dict[str, Any] | None) -> bool:
-    if _usuario_e_mecanico(usuario):
+    if _mecanico_legado_sem_granular(usuario):
         return False
     return _usuario_pode_acao_req_os(usuario, "requisicoes_os_liberar_estoque")
 
@@ -3258,7 +3394,7 @@ def _usuario_pode_listar_requisicoes_aba(
     aba_norm = (aba or "ativas").strip().lower()
     if _usuario_e_mecanico(usuario):
         if aba_norm == "internas":
-            return False
+            return _usuario_pode_ver_requisicoes_interna(usuario)
         return _usuario_pode_ver_requisicoes_os_mecanico(usuario)
     if aba_norm == "internas":
         return _usuario_pode_ver_requisicoes_interna(usuario)
@@ -3275,7 +3411,11 @@ def _usuario_pode_salvar_requisicao(
     tipo = str(tipo_requisicao or "os").strip().lower()
     if tipo == "interna":
         if _usuario_e_mecanico(usuario):
-            return False
+            if not _controle_abas_efetivo_usuario(usuario):
+                return False
+            if req_id:
+                return _usuario_pode_editar_requisicoes_interna(usuario)
+            return _usuario_pode_criar_requisicoes_interna(usuario)
         if req_id:
             return _usuario_pode_editar_requisicoes_interna(usuario)
         return _usuario_pode_criar_requisicoes_interna(usuario)
@@ -3320,16 +3460,17 @@ def _permissoes_payload_requisicoes(usuario: dict[str, Any] | None) -> dict[str,
         "pode_criar_interna": _usuario_pode_criar_requisicoes_interna(usuario),
         "pode_editar_interna": _usuario_pode_editar_requisicoes_interna(usuario),
         "pode_finalizar_interna": _usuario_pode_finalizar_requisicoes_interna(usuario),
+        "pode_ver_precos_pecas": _usuario_mecanico_pode_ver_precos_pecas(usuario),
     }
 
 
 def _usuario_pode_ver_estoque(usuario: dict[str, Any] | None) -> bool:
-    if _usuario_e_mecanico(usuario):
-        return False
     if not _usuario_modulo_visivel(usuario, "estoque"):
         return False
     if not usuario or not _usuario_acesso_restrito(usuario):
         return True
+    if _mecanico_legado_sem_granular(usuario):
+        return False
     return _usuario_tem_permissao(usuario, "estoque_geral_visualizar")
 
 
@@ -3342,12 +3483,12 @@ def _usuario_pode_movimentar_estoque(usuario: dict[str, Any] | None) -> bool:
 
 
 def _usuario_pode_pedidos_estoque(usuario: dict[str, Any] | None) -> bool:
-    if _usuario_e_mecanico(usuario):
-        return False
     if not _usuario_modulo_visivel(usuario, "estoque"):
         return False
     if not usuario or not _usuario_acesso_restrito(usuario):
         return True
+    if _mecanico_legado_sem_granular(usuario):
+        return False
     return _usuario_tem_permissao(usuario, "estoque_geral_pedidos")
 
 
@@ -3642,6 +3783,27 @@ def _permissoes_formulario_os(usuario: dict[str, Any] | None) -> dict[str, Any]:
             "modulos_visiveis": {k: True for k in MAPA_MODULO_PREFIXOS},
             "permissoes_granulares": permissoes_granulares_vazias(),
         }
+    if _usuario_e_admin(usuario):
+        gran_admin = permissoes_template_por_modelo("admin")
+        modulos_admin = {k: True for k in MAPA_MODULO_PREFIXOS}
+        return {
+            "perfil": "admin",
+            "modelo_base": "admin",
+            "perfil_nome": usuario.get("perfil_nome") or "Administrador",
+            "pode_editar_tudo": True,
+            "pode_atribuir_mecanico": True,
+            "modulo_os_visivel": True,
+            "pode_criar_os": True,
+            "pode_editar_os_existente": True,
+            "modulo_os_completo": True,
+            "pode_editar_os_modulo": True,
+            "campos_editaveis": None,
+            "pode_telespectar": _usuario_pode_telespectar_app(usuario),
+            "deve_ser_rastreado": usuario_deve_ser_rastreado(usuario),
+            "controle_abas_ativo": False,
+            "modulos_visiveis": modulos_admin,
+            "permissoes_granulares": gran_admin,
+        }
     if _usuario_e_mecanico(usuario):
         gran_efetivas = _permissoes_efetivas_usuario(usuario)
         modulos_mec = modulos_visiveis_de_permissoes(gran_efetivas)
@@ -3652,11 +3814,13 @@ def _permissoes_formulario_os(usuario: dict[str, Any] | None) -> dict[str, Any]:
         pode_criar = bool(gran_efetivas.get("ordem_os_geral_criar"))
         pode_editar_existente = bool(gran_efetivas.get("ordem_os_geral_editar"))
         modulo_completo = pode_editar_existente
+        controle_abas = _controle_abas_efetivo_usuario(usuario)
         return {
             "perfil": "mecanico",
             "modelo_base": "mecanico",
-            "pode_editar_tudo": False,
-            "pode_atribuir_mecanico": False,
+            "perfil_nome": usuario.get("perfil_nome") or "Mecânico",
+            "pode_editar_tudo": pode_editar_existente,
+            "pode_atribuir_mecanico": _usuario_pode_atribuir_mecanico(usuario),
             "modulo_os_visivel": modulo_visivel,
             "pode_criar_os": pode_criar,
             "pode_editar_os_existente": pode_editar_existente,
@@ -3665,15 +3829,12 @@ def _permissoes_formulario_os(usuario: dict[str, Any] | None) -> dict[str, Any]:
             "campos_editaveis": None if modulo_completo else [],
             "pode_telespectar": _usuario_pode_telespectar_app(usuario),
             "deve_ser_rastreado": usuario_deve_ser_rastreado(usuario),
-            "controle_abas_ativo": True,
+            "controle_abas_ativo": controle_abas,
             "modulos_visiveis": modulos_mec,
             "permissoes_granulares": gran_efetivas,
         }
     modelo_base = _modelo_base_usuario(usuario)
-    controle_abas = _config_bool(
-        usuario.get("controle_abas_ativo"),
-        padrao=modelo_base != "admin",
-    )
+    controle_abas = _controle_abas_efetivo_usuario(usuario)
     gran_efetivas = _permissoes_efetivas_usuario(usuario)
     modulos = modulos_visiveis_de_permissoes(gran_efetivas)
     if _usuario_e_admin(usuario):
@@ -4177,6 +4338,7 @@ def index():
         usuario_atual=_usuario_logado(),
         exigir_login=_exigir_login_efetivo(),
         pdf_orientacao=pdf_orientacao,
+        permissoes_os_inicial=_permissoes_formulario_os(_usuario_logado()),
     )
 
 
@@ -5122,6 +5284,10 @@ def api_permissoes_arvore():
         "arvore": arvore_permissoes_json(),
         "chaves": list(permissoes_granulares_vazias().keys()),
         "permissoes_padrao": permissoes_padrao_usuario_os(),
+        "permissoes_templates": {
+            modelo: permissoes_template_restaurar_por_modelo(modelo)
+            for modelo in ("admin", "mecanico", "atendente", "operador", "personalizado")
+        },
     })
 
 
@@ -6348,7 +6514,7 @@ def _usuario_pode_ver_historico_perfil_mecanico(
 @app.route("/api/mecanicos-ativos")
 def api_mecanicos_ativos():
     usuario = _usuario_logado()
-    if _usuario_e_mecanico(usuario):
+    if _mecanico_legado_sem_granular(usuario):
         return jsonify({"sucesso": False, "mensagem": "Acesso negado."}), 403
     if not DATABASE_PATH.is_file():
         return jsonify({"sucesso": False, "mensagem": "Banco de dados não encontrado."}), 500
@@ -6951,7 +7117,7 @@ def api_atribuir_os(numero_os: int):
 
 
 def _visao_fluxo_usuario(usuario: dict[str, Any] | None) -> str:
-    return "mecanico" if _usuario_e_mecanico(usuario) else "responsavel"
+    return "mecanico" if _mecanico_visao_campo(usuario) else "responsavel"
 
 
 @app.route("/api/pecas/buscar")
@@ -6964,12 +7130,7 @@ def api_pecas_buscar():
     termo = (request.args.get("termo") or "").strip()
     if len(termo) < 2:
         return jsonify({"sucesso": True, "pecas": []})
-    incluir_preco = (
-        _usuario_pode_editar_requisicoes_os(usuario)
-        or _usuario_pode_responder_requisicoes_os(usuario)
-        or _usuario_pode_editar_requisicoes_interna(usuario)
-        or _usuario_pode_ver_preco_catalogo_pre_orcamentos(usuario)
-    )
+    incluir_preco = _usuario_pode_ver_precos_catalogo_requisicoes(usuario)
     try:
         with conexao_principal() as conn:
             pecas = buscar_pecas_catalogo(conn, termo, limite=12, incluir_preco=incluir_preco)
@@ -7157,9 +7318,10 @@ def api_servicos_buscar():
     termo = (request.args.get("termo") or "").strip()
     if len(termo) < 2:
         return jsonify({"sucesso": True, "servicos": []})
+    incluir_preco = _usuario_pode_ver_precos_catalogo_requisicoes(usuario)
     try:
         with conexao_principal() as conn:
-            servicos = buscar_servicos_catalogo(conn, termo, limite=12, incluir_preco=True)
+            servicos = buscar_servicos_catalogo(conn, termo, limite=12, incluir_preco=incluir_preco)
         return jsonify({"sucesso": True, "servicos": servicos})
     except sqlite3.Error as exc:
         return jsonify({"sucesso": False, "mensagem": str(exc)}), 500
@@ -7290,7 +7452,7 @@ def api_requisicoes_listar():
     try:
         init_ordens_servico()
         with conexao_banco() as conn:
-            if _usuario_e_mecanico(usuario):
+            if _mecanico_visao_campo(usuario):
                 lista = listar_requisicoes(
                     conn, visao=visao, numero_os=os_filtro,
                     mecanico_id=int(usuario["id"]), aba=aba,
@@ -7301,7 +7463,7 @@ def api_requisicoes_listar():
             else:
                 lista = listar_requisicoes(conn, visao=visao, numero_os=os_filtro, aba=aba)
         for req in lista:
-            _enriquecer_requisicao_catalogo(req, visao=visao)
+            _preparar_requisicao_resposta(req, usuario, visao=visao)
         return jsonify({
             "sucesso": True,
             "requisicoes": lista,
@@ -7320,7 +7482,7 @@ def api_requisicoes_obter(req_id: int):
     try:
         init_ordens_servico()
         with conexao_banco() as conn:
-            if _usuario_e_mecanico(usuario):
+            if _mecanico_visao_campo(usuario):
                 row = conn.execute(
                     """
                     SELECT id FROM requisicoes_material
@@ -7334,11 +7496,11 @@ def api_requisicoes_obter(req_id: int):
             if req is None:
                 return jsonify({"sucesso": False, "mensagem": "Requisição não encontrada."}), 404
             tipo_req = str(req.get("tipo_requisicao") or "os").strip().lower()
-            if not _usuario_e_mecanico(usuario) and not _usuario_pode_ver_requisicao(
+            if not _mecanico_visao_campo(usuario) and not _usuario_pode_ver_requisicao(
                 usuario, tipo_requisicao=tipo_req
             ):
                 return jsonify({"sucesso": False, "mensagem": "Acesso negado."}), 403
-            if _usuario_e_mecanico(usuario):
+            if _mecanico_visao_campo(usuario):
                 if int(req.get("mecanico_id") or 0) != int(usuario["id"]):
                     return jsonify({"sucesso": False, "mensagem": "Requisição não encontrada."}), 404
                 pre_st, msg = _bloquear_requisicao_os_mecanico_pre(
@@ -7352,7 +7514,7 @@ def api_requisicoes_obter(req_id: int):
                         "numero_os": int(req.get("numero_os") or 0),
                         "requisicao_id": req_id,
                     }), 403
-            _enriquecer_requisicao_catalogo(req, visao=visao)
+            _preparar_requisicao_resposta(req, usuario, visao=visao)
         return jsonify({
             "sucesso": True,
             "requisicao": req,
@@ -7415,8 +7577,6 @@ def api_requisicoes_salvar():
                     titulo=titulo,
                 )
             elif _usuario_e_mecanico(usuario):
-                if tipo_requisicao == "interna" and como_responsavel:
-                    return jsonify({"sucesso": False, "mensagem": "Acesso negado."}), 403
                 if tipo_requisicao != "interna" and numero_os:
                     exigir_pode_abrir_requisicao_mecanico(
                         conn, numero_os, mecanico_id=int(usuario["id"])
@@ -7436,7 +7596,7 @@ def api_requisicoes_salvar():
             else:
                 return jsonify({"sucesso": False, "mensagem": "Acesso negado."}), 403
         visao = _visao_fluxo_usuario(usuario)
-        _enriquecer_requisicao_catalogo(salvo, visao=visao)
+        _preparar_requisicao_resposta(salvo, usuario, visao=visao)
         sub_req = "Envio de requisição" if salvo.get("status") == "enviada" else "Salvar requisição"
         modulo_rast = "Requisições internas" if tipo_requisicao == "interna" else "Requisições de O.S."
         _registrar_acao_rastreio(
@@ -7484,7 +7644,7 @@ def api_requisicoes_enviar(req_id: int):
                     conn, numero_os, mecanico_id=int(usuario["id"])
                 )
             salvo = enviar_requisicao_mecanico(conn, req_id, int(usuario["id"]))
-        _enriquecer_requisicao_catalogo(salvo, visao="mecanico")
+        _preparar_requisicao_resposta(salvo, usuario, visao="mecanico")
         _registrar_acao_rastreio(
             usuario,
             "Requisições de O.S.",
@@ -7511,7 +7671,7 @@ def api_requisicoes_responder(req_id: int):
         init_ordens_servico()
         with conexao_banco() as conn:
             salvo = enviar_resposta_responsavel(conn, req_id)
-        _enriquecer_requisicao_catalogo(salvo, visao="responsavel")
+        _preparar_requisicao_resposta(salvo, usuario, visao="responsavel")
         _registrar_acao_rastreio(
             usuario,
             "Requisições de O.S.",
@@ -7542,7 +7702,7 @@ def api_requisicoes_finalizar_interna(req_id: int):
         init_ordens_servico()
         with conexao_banco() as conn:
             salvo = finalizar_requisicao_interna(conn, req_id)
-        _enriquecer_requisicao_catalogo(salvo, visao="responsavel")
+        _preparar_requisicao_resposta(salvo, usuario, visao="responsavel")
         _registrar_acao_rastreio(
             usuario,
             "Requisições internas",
@@ -7587,7 +7747,7 @@ def api_requisicoes_publicar_oficina(req_id: int):
         init_ordens_servico()
         with conexao_banco() as conn:
             salvo = publicar_requisicao_interna_oficina(conn, req_id)
-        _enriquecer_requisicao_catalogo(salvo, visao="responsavel")
+        _preparar_requisicao_resposta(salvo, usuario, visao="responsavel")
         _registrar_acao_rastreio(
             usuario,
             "Requisições internas",
@@ -7657,7 +7817,7 @@ def api_requisicoes_liberar_estoque(req_id: int):
                 usuario_nome=str(usuario.get("nome_exibicao") or usuario.get("usuario") or ""),
                 permitir_sem_estoque=permitir_sem_estoque,
             )
-        _enriquecer_requisicao_catalogo(salvo, visao="responsavel")
+        _preparar_requisicao_resposta(salvo, usuario, visao="responsavel")
         _registrar_acao_rastreio(
             usuario,
             "Requisições de O.S.",
@@ -8697,7 +8857,8 @@ def listar_os():
         return jsonify({"sucesso": False, "mensagem": "Banco de dados não encontrado."}), 500
 
     usuario = _usuario_logado()
-    if not _usuario_e_mecanico(usuario):
+    ver_todas = _usuario_pode_ver_todas_os(usuario)
+    if ver_todas:
         negado = _negar_sem_modulo(usuario, "lista")
         if negado:
             return negado
@@ -8715,7 +8876,7 @@ def listar_os():
             marcadores_cfg = carregar_marcadores_lista(conn)
             excluir = _status_excluidos_lista_os_ativa(conn)
             ph_excl = ", ".join("?" * len(excluir)) if excluir else None
-            if _usuario_e_mecanico(usuario):
+            if _usuario_e_mecanico(usuario) and not ver_todas:
                 if ph_excl:
                     rows = conn.execute(
                         f"""

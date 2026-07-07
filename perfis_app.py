@@ -65,10 +65,10 @@ def _garantir_perfis_sistema(conn: sqlite3.Connection) -> None:
         conn.execute(
             """
             UPDATE perfis_app
-            SET modelo_base = ?, eh_sistema = 1
+            SET modelo_base = ?, eh_sistema = 1, permissoes_granulares = ?
             WHERE nome = ? COLLATE NOCASE
             """,
-            (modelo, nome),
+            (modelo, serializar_permissoes_granulares(gran), nome),
         )
 
 

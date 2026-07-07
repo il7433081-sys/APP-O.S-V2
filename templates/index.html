@@ -5639,6 +5639,11 @@
                                             id="btn-cfg-toggle-permissoes-arvore" aria-expanded="false">
                                         <i class="bi bi-chevron-down me-1"></i> Mostrar/ocultar árvore
                                     </button>
+                                    <button type="button" class="btn btn-sm btn-outline-warning mb-2 ms-1"
+                                            id="btn-cfg-reset-permissoes-perfil"
+                                            title="Remarca na árvore as permissões padrão do perfil selecionado (não salva automaticamente)">
+                                        <i class="bi bi-arrow-counterclockwise me-1"></i> Restaurar padrão do perfil
+                                    </button>
                                     <div class="cfg-box-corpo">
                                         <div id="cfg-u-permissoes-arvore"
                                              class="cfg-permissoes-arvore border rounded p-2 bg-dark bg-opacity-25"
@@ -6061,6 +6066,7 @@
 
         const EXIGIR_LOGIN_APP = {{ "true" if exigir_login else "false" }};
         const USUARIO_SESSAO = {{ usuario_atual | tojson }};
+        const PERMISSOES_OS_INICIAL = {{ permissoes_os_inicial | tojson }};
         const PDF_ORIENTACAO_SALVA = {{ pdf_orientacao | tojson }};
 
         let _osModalResolve = null;
@@ -6201,22 +6207,22 @@
             });
         }
 
-        let PERMISSOES_OS = {
+        let PERMISSOES_OS = Object.assign({
             perfil: USUARIO_SESSAO ? (USUARIO_SESSAO.perfil || "") : "",
-            pode_editar_tudo: !USUARIO_SESSAO || USUARIO_SESSAO.perfil !== "mecanico",
-            pode_atribuir_mecanico: !USUARIO_SESSAO || ["admin", "atendente", "operador"].indexOf(USUARIO_SESSAO.perfil) >= 0,
-            modulo_os_visivel: true,
-            pode_criar_os: true,
-            pode_editar_os_existente: true,
-            modulo_os_completo: true,
-            pode_editar_os_modulo: true,
-            campos_editaveis: null,
+            pode_editar_tudo: false,
+            pode_atribuir_mecanico: false,
+            modulo_os_visivel: false,
+            pode_criar_os: false,
+            pode_editar_os_existente: false,
+            modulo_os_completo: false,
+            pode_editar_os_modulo: false,
+            campos_editaveis: [],
             pode_telespectar: false,
             deve_ser_rastreado: false,
             controle_abas_ativo: false,
             modulos_visiveis: {},
             permissoes_granulares: {},
-        };
+        }, PERMISSOES_OS_INICIAL || {});
         const CAMPOS_MECANICO = new Set([
             "horas_uso", "constatacao_diagnostico", "diag_analista_nome", "diag_data",
             "diag_garantia", "assinatura_tecnico", "analise_reparos", "conclusao_analista_nome",
@@ -6616,13 +6622,12 @@
                 listaPodeExcluir();
         }
         function aplicarPermissoesListaOsUi() {
-            const mecanico = PERMISSOES_OS.perfil === "mecanico";
-            const podeVer = !mecanico && listaPodeVisualizar();
+            const podeVer = mecanicoLegadoAtivo() ? false : listaPodeVisualizar();
             const blocoQuadro = document.getElementById("bloco-quadro-os");
             const blocoPausadas = document.getElementById("bloco-os-pausadas");
             const blocoCanceladas = document.getElementById("bloco-os-canceladas");
             const blocoSalvas = document.getElementById("bloco-os-salvas");
-            if (blocoQuadro) blocoQuadro.classList.toggle("d-none", mecanico || !podeVer);
+            if (blocoQuadro) blocoQuadro.classList.toggle("d-none", !podeVer);
             if (blocoPausadas) blocoPausadas.classList.toggle("d-none", !podeVer);
             if (blocoCanceladas) blocoCanceladas.classList.toggle("d-none", !podeVer);
             if (blocoSalvas) blocoSalvas.classList.toggle("d-none", !podeVer);
@@ -6699,16 +6704,25 @@
                 || reqInternaPodeEditar() || reqInternaPodeFinalizar();
         }
         function reqEhResponsavel() {
-            return PERMISSOES_OS.perfil !== "mecanico";
+            if (usarPermissoesGranulares()) {
+                return reqOsPodeResponder() || reqOsPodeLiberarEstoque()
+                    || reqInternaPodeEditar() || reqInternaPodeFinalizar();
+            }
+            return !ehMecanico();
+        }
+        function reqMecanicoPodeVerPrecos() {
+            if (!ehMecanico()) return true;
+            if (reqPermissoesCache && reqPermissoesCache.pode_ver_precos_pecas !== undefined) {
+                return !!reqPermissoesCache.pode_ver_precos_pecas;
+            }
+            return osTemPermissao("requisicoes_os_ver_precos_pecas");
         }
         function reqPodeEditarPrecos() {
             if (!reqEhResponsavel()) return false;
+            if (ehMecanico() && !reqMecanicoPodeVerPrecos()) return false;
             return reqOsPodeEditar() || reqOsPodeResponder() || reqInternaPodeEditar();
         }
         function reqPodeUsarCatalogoPecas() {
-            if (PERMISSOES_OS.perfil === "mecanico") {
-                return reqOsPodeCriar() || reqOsPodeEditar();
-            }
             return reqOsPodeCriar() || reqOsPodeEditar() || reqOsPodeResponder()
                 || reqInternaPodeCriar() || reqInternaPodeEditar();
         }
@@ -6719,9 +6733,6 @@
             const idEl = document.getElementById("req-editor-id");
             const temId = !!(idEl && idEl.value);
             const interna = reqEditorTipo === "interna";
-            if (PERMISSOES_OS.perfil === "mecanico") {
-                return temId ? reqOsPodeEditar() : reqOsPodeCriar();
-            }
             if (interna) {
                 return temId ? reqInternaPodeEditar() : reqInternaPodeCriar();
             }
@@ -6731,7 +6742,7 @@
             if (aba === "internas") {
                 return reqInternaPodeVisualizar();
             }
-            if (PERMISSOES_OS.perfil === "mecanico") {
+            if (usarPermissoesGranulares() || ehMecanico()) {
                 return reqOsPodeVisualizar() || reqOsPodeCriar()
                     || reqOsPodeEditar() || reqOsPodeEnviar();
             }
@@ -6759,8 +6770,24 @@
             const pane = document.getElementById("pane-mod-requisicao");
             return !!(pane && pane.classList.contains("active"));
         }
+        function recarregarPainelModuloAtivo() {
+            try {
+                if (requisicoesPainelAtivo() && typeof carregarRequisicoesPainel === "function") {
+                    carregarRequisicoesPainel();
+                }
+                if (estoquePainelAtivo() && typeof carregarPainelEstoque === "function") {
+                    const sub = estoqueSubabaAtivaAtual();
+                    if (sub === "ordens" && typeof carregarFicharioOrdens === "function") {
+                        carregarFicharioOrdens();
+                    } else if (sub === "pendencias" && typeof carregarPendenciasAtualizarEstoque === "function") {
+                        carregarPendenciasAtualizarEstoque();
+                    } else {
+                        carregarPainelEstoque();
+                    }
+                }
+            } catch (err) { console.error("recarregar painel modulo:", err); }
+        }
         function aplicarPermissoesRequisicoesUi() {
-            const ehMec = PERMISSOES_OS.perfil === "mecanico";
             const p = reqPermissoesCache || {};
             document.querySelectorAll("#req-lista-subabas [data-req-aba]").forEach(function (btn) {
                 const aba = btn.getAttribute("data-req-aba");
@@ -6769,7 +6796,7 @@
             });
             const btnInt = document.getElementById("btn-req-nova-interna");
             if (btnInt) {
-                btnInt.classList.toggle("d-none", ehMec || !(p.pode_criar_interna ?? reqInternaPodeCriar()));
+                btnInt.classList.toggle("d-none", !(p.pode_criar_interna ?? reqInternaPodeCriar()));
             }
             const btnSalvar = document.getElementById("btn-req-salvar");
             if (btnSalvar) btnSalvar.classList.toggle("d-none", !reqPodeSalvarEditor());
@@ -6897,8 +6924,10 @@
         }
         function cadPodeBuscarClientes() {
             if (cadClientesPodeVisualizar()) return true;
-            if (!PERMISSOES_OS.controle_abas_ativo) return true;
-            if (PERMISSOES_OS.perfil === "mecanico") return false;
+            if (mecanicoLegadoAtivo()) return false;
+            if (!PERMISSOES_OS.controle_abas_ativo) {
+                return !ehMecanico();
+            }
             return osTemPermissao("ordem_os_geral_visualizar")
                 || osTemPermissao("ordem_os_geral_criar")
                 || osTemPermissao("ordem_os_geral_editar")
@@ -7104,7 +7133,7 @@
         let cfgPodeVerProprioPerfil = false;
         function montarOptsPermissoesConfig() {
             const ehAdmin = PERMISSOES_OS.perfil === "admin";
-            const gran = !!PERMISSOES_OS.controle_abas_ativo;
+            const gran = usarPermissoesGranulares();
             const podeVerPerfil = ehAdmin || (gran ? cfgPerfilPodeVisualizar() : cfgPodeVerProprioPerfil);
             const podeEditarPerfil = ehAdmin || (gran ? cfgPerfilPodeEditar() : cfgPodeEditarProprioPerfil);
             return {
@@ -8669,7 +8698,7 @@
             const podePreco = opts.podePreco;
             const catalogo = !!(item.catalogo_id);
             const isMo = itemRequisicaoEhMo(item);
-            const mechanicMoReadonly = isMo && PERMISSOES_OS.perfil === "mecanico";
+            const mechanicMoReadonly = isMo && ehMecanico() && !reqPodeEditarPrecos();
             const row = document.createElement("div");
             const clsExtra = classeItemRequisicao(item);
             const libSt = statusLiberacaoItem(item);
@@ -8685,7 +8714,7 @@
                 (statusItem === "ativo" && (item.preco || "").trim() && item.catalogo_preco_ref_fmt ? " req-item-preco-ok" : "") +
                 (libSt === "ok" ? " req-estoque-ok" : (libSt === "parcial" ? " req-estoque-parcial" : ""));
             const somenteLeitura = exclPend || mechanicMoReadonly ? " readonly" : "";
-            const descReadonly = (catalogo && PERMISSOES_OS.perfil === "mecanico") || mechanicMoReadonly
+            const descReadonly = (catalogo && ehMecanico() && !reqPodeEditarPrecos()) || mechanicMoReadonly
                 ? " readonly" : somenteLeitura;
             const codigo = item.codigo_exibicao || item.codigo_barras || (catalogo ? String(item.catalogo_id) : "");
             const descPlaceholder = isMo ? "Serviço / M.O." : "Material / peça (manual)";
@@ -8840,7 +8869,7 @@
                                     btn.type = "button";
                                     btn.className = "list-group-item list-group-item-action py-1 small";
                                     let txt = (p.codigo_exibicao || p.id) + " — " + (p.descricao || "");
-                                    if (p.valor_unitario_fmt) {
+                                    if (reqMecanicoPodeVerPrecos() && p.valor_unitario_fmt) {
                                         txt += " (R$ " + p.valor_unitario_fmt + ")";
                                     }
                                     btn.textContent = txt;
@@ -8869,7 +8898,7 @@
                                 descricao: selecionada.descricao || "",
                                 quantidade: String(qtd),
                             };
-                            if (selecionada.valor_unitario_fmt) {
+                            if (reqMecanicoPodeVerPrecos() && selecionada.valor_unitario_fmt) {
                                 novo.preco = selecionada.valor_unitario_fmt;
                                 novo.catalogo_preco_ref_fmt = selecionada.valor_unitario_fmt;
                             }
@@ -8933,7 +8962,9 @@
                                     btn.type = "button";
                                     btn.className = "list-group-item list-group-item-action py-1 small";
                                     let txt = (s.codigo_exibicao || s.id) + " — " + (s.descricao || "");
-                                    if (s.valor_unitario_fmt) txt += " (R$ " + s.valor_unitario_fmt + ")";
+                                    if (reqMecanicoPodeVerPrecos() && s.valor_unitario_fmt) {
+                                        txt += " (R$ " + s.valor_unitario_fmt + ")";
+                                    }
                                     btn.textContent = txt;
                                     btn.addEventListener("click", function () {
                                         selecionada = s;
@@ -8960,7 +8991,7 @@
                                 descricao: selecionada.descricao || "",
                                 quantidade: String(qtd),
                             };
-                            if (selecionada.valor_unitario_fmt) {
+                            if (reqMecanicoPodeVerPrecos() && selecionada.valor_unitario_fmt) {
                                 novo.preco = selecionada.valor_unitario_fmt;
                                 novo.catalogo_preco_ref_fmt = selecionada.valor_unitario_fmt;
                             }
@@ -11201,26 +11232,58 @@
                 !osCargaRestrita;
         }
 
+        function usarPermissoesGranulares() {
+            return !!PERMISSOES_OS.controle_abas_ativo && PERMISSOES_OS.perfil !== "admin";
+        }
+
+        function ehMecanico() {
+            return PERMISSOES_OS.perfil === "mecanico";
+        }
+
+        function mecanicoLegadoAtivo() {
+            return ehMecanico() && !usarPermissoesGranulares();
+        }
+
+        function atualizarPermissoesOs(novas) {
+            if (!novas || typeof novas !== "object") return;
+            if (novas.perfil === "admin") {
+                Object.assign(PERMISSOES_OS, novas);
+                return;
+            }
+            const mv = Object.assign(
+                {},
+                PERMISSOES_OS.modulos_visiveis || {},
+                novas.modulos_visiveis || {}
+            );
+            const gran = Object.assign(
+                {},
+                PERMISSOES_OS.permissoes_granulares || {},
+                novas.permissoes_granulares || {}
+            );
+            Object.assign(PERMISSOES_OS, novas, {
+                modulos_visiveis: mv,
+                permissoes_granulares: gran,
+            });
+        }
+
         function osModuloVisivel(chave) {
-            if (chave === "pre_orcamentos" && PERMISSOES_OS.perfil !== "admin") {
-                const mv = PERMISSOES_OS.modulos_visiveis;
-                return !!(mv && mv.pre_orcamentos);
-            }
+            if (PERMISSOES_OS.perfil === "admin") return true;
             const mv = PERMISSOES_OS.modulos_visiveis;
-            if (!mv || typeof mv !== "object" || Object.keys(mv).length === 0) {
-                return PERMISSOES_OS.perfil === "admin";
+            if (usarPermissoesGranulares()) {
+                if (!mv || typeof mv !== "object") return false;
+                if (chave === "pre_orcamentos") return !!mv.pre_orcamentos;
+                return !!mv[chave];
             }
+            if (chave === "pre_orcamentos") return !!(mv && mv.pre_orcamentos);
+            if (!mv || typeof mv !== "object" || Object.keys(mv).length === 0) return true;
             return !!mv[chave];
         }
 
         function osTemPermissao(chave) {
             if (PERMISSOES_OS.perfil === "admin") return true;
-            if (chave && chave.indexOf("pre_orcamentos_") === 0) {
-                const gran = PERMISSOES_OS.permissoes_granulares || {};
-                return !!gran[chave];
-            }
-            if (!PERMISSOES_OS.controle_abas_ativo) return true;
             const gran = PERMISSOES_OS.permissoes_granulares || {};
+            if (chave && chave.indexOf("pre_orcamentos_") === 0) return !!gran[chave];
+            if (!PERMISSOES_OS.controle_abas_ativo) return true;
             return !!gran[chave];
         }
 
@@ -11231,11 +11294,21 @@
         }
 
         function aplicarPermissoesOsUi() {
-            const mecanico = PERMISSOES_OS.perfil === "mecanico";
-            const moduloOsVisivel = !mecanico || !!PERMISSOES_OS.modulo_os_visivel;
-            const moduloOsCompleto = !mecanico || !!PERMISSOES_OS.modulo_os_completo;
-            const podeCriar = !mecanico || !!PERMISSOES_OS.pode_criar_os;
-            const formularioCompleto = mecanicoFormularioCompletoModulo();
+            const gran = usarPermissoesGranulares();
+            const mecanico = ehMecanico();
+            const mecanicoLegado = mecanicoLegadoAtivo();
+            const moduloOsVisivel = gran ? osModuloVisivel("ordem") : (!mecanicoLegado || !!PERMISSOES_OS.modulo_os_visivel);
+            const moduloOsCompleto = gran
+                ? osTemPermissao("ordem_os_geral_editar")
+                : (!mecanicoLegado || !!PERMISSOES_OS.modulo_os_completo);
+            const podeCriar = gran
+                ? osTemPermissao("ordem_os_geral_criar")
+                : (!mecanicoLegado || !!PERMISSOES_OS.pode_criar_os);
+            const formularioCompleto = gran
+                ? (numeroOsEmEdicao()
+                    ? osTemPermissao("ordem_os_geral_editar")
+                    : osTemPermissao("ordem_os_geral_criar"))
+                : mecanicoFormularioCompletoModulo();
             const navOrdem = document.getElementById("nav-mod-ordem");
             const btnNova = document.getElementById("btn-nova-os");
             const blocoMec = document.getElementById("bloco-mecanico-atribuido");
@@ -11247,8 +11320,7 @@
             const btnFinHeader = document.getElementById("btn-finalizar-servico");
             const tabDiag = document.getElementById("tab-diagnostico");
             const btnSalvar = document.getElementById("btn-salvar-os");
-            const hideOrdem = (mecanico && !moduloOsVisivel) ||
-                (!mecanico && !osModuloVisivel("ordem"));
+            const hideOrdem = !moduloOsVisivel;
             if (navOrdem) {
                 navOrdem.classList.toggle("d-none", hideOrdem);
             }
@@ -11257,34 +11329,37 @@
                 paneOrdem.classList.remove("show", "active");
             }
             if (btnNova) {
-                const hideNova = (mecanico && !podeCriar) ||
-                    (!mecanico && !PERMISSOES_OS.pode_criar_os);
+                const hideNova = !podeCriar && !PERMISSOES_OS.pode_criar_os;
                 btnNova.classList.toggle("d-none", hideNova);
             }
             if (btnPdf) {
-                const hidePdf = mecanico || !osTemPermissao("ordem_os_geral_gerar_pdf");
-                btnPdf.classList.toggle("d-none", hidePdf);
+                btnPdf.classList.toggle("d-none", !osTemPermissao("ordem_os_geral_gerar_pdf"));
             }
             if (blocoPdfOri) {
-                blocoPdfOri.classList.toggle("d-none", mecanico || !osTemPermissao("ordem_os_geral_gerar_pdf"));
+                blocoPdfOri.classList.toggle("d-none", !osTemPermissao("ordem_os_geral_gerar_pdf"));
             }
             if (blocoMec) blocoMec.classList.toggle("d-none", !PERMISSOES_OS.pode_atribuir_mecanico);
             if (blocoResumoMec) blocoResumoMec.classList.add("d-none");
             if (blocoAlegacoes) blocoAlegacoes.classList.remove("d-none");
             if (tabDiag && tabDiag.parentElement) {
-                tabDiag.parentElement.classList.toggle("d-none", mecanico && !moduloOsCompleto);
+                tabDiag.parentElement.classList.toggle("d-none", mecanicoLegado && !moduloOsCompleto);
             }
-            if (mecanico && tabDiag && tabDiag.classList.contains("active") && !moduloOsCompleto &&
+            if (mecanicoLegado && tabDiag && tabDiag.classList.contains("active") && !moduloOsCompleto &&
                 typeof irParaAba === "function") {
                 irParaAba(0);
             }
-            if (btnFinHeader) atualizarBotaoFinalizarMecanico();
+            if (btnFinHeader) {
+                try { atualizarBotaoFinalizarMecanico(); } catch (err) { console.error("btn finalizar:", err); }
+            }
             if (btnSalvar) {
-                btnSalvar.classList.toggle("d-none", mecanico && osCargaRestrita);
+                btnSalvar.classList.toggle("d-none", mecanicoLegado && osCargaRestrita);
             }
             aplicarAbaAoVivo();
             const navAg = document.getElementById("nav-mod-agendamentos");
-            if (navAg && !mecanico) navAg.classList.toggle("d-none", !osModuloVisivel("agendamentos"));
+            if (navAg) {
+                const showAg = gran ? osModuloVisivel("agendamentos") : (!mecanicoLegado && osModuloVisivel("agendamentos"));
+                navAg.classList.toggle("d-none", !showAg);
+            }
             try {
                 if (typeof aplicarPermissoesAgendamentosUi === "function") aplicarPermissoesAgendamentosUi();
             } catch (err) { console.error("perm agendamentos:", err); }
@@ -11309,29 +11384,24 @@
             try {
                 if (typeof aplicarPermissoesConfiguracoesUi === "function") aplicarPermissoesConfiguracoesUi();
             } catch (err) { console.error("perm configuracoes:", err); }
-            if (requisicoesPainelAtivo() && typeof carregarRequisicoesPainel === "function") {
-                carregarRequisicoesPainel();
+            if (estoquePodeVisualizar()) {
+                try { atualizarBadgePendenciasEstoque(); } catch (err) { console.error("badge estoque:", err); }
             }
-            if (estoquePainelAtivo() && typeof carregarPainelEstoque === "function") {
-                const sub = estoqueSubabaAtivaAtual();
-                if (sub === "ordens" && typeof carregarFicharioOrdens === "function") {
-                    carregarFicharioOrdens();
-                } else if (sub === "pendencias" && typeof carregarPendenciasAtualizarEstoque === "function") {
-                    carregarPendenciasAtualizarEstoque();
-                } else {
-                    carregarPainelEstoque();
-                }
-            }
-            if (estoquePodeVisualizar()) atualizarBadgePendenciasEstoque();
             const navPre = document.getElementById("nav-mod-pre-orcamentos");
-            if (navPre && !mecanico) {
+            if (navPre) {
                 const mostrarPre = PERMISSOES_OS.perfil === "admin" || osModuloVisivel("pre_orcamentos");
                 navPre.classList.toggle("d-none", !mostrarPre);
             }
             const navLista = document.getElementById("nav-mod-lista");
-            if (navLista && !mecanico) navLista.classList.toggle("d-none", !osModuloVisivel("lista"));
+            if (navLista) {
+                const showLista = gran ? osModuloVisivel("lista") : (!mecanicoLegado && osModuloVisivel("lista"));
+                navLista.classList.toggle("d-none", !showLista);
+            }
             const navReq = document.getElementById("nav-mod-requisicao");
-            if (navReq && !mecanico) navReq.classList.toggle("d-none", !osModuloVisivel("requisicao"));
+            if (navReq) {
+                const showReq = gran ? osModuloVisivel("requisicao") : (!mecanicoLegado && osModuloVisivel("requisicao"));
+                navReq.classList.toggle("d-none", !showReq);
+            }
             const navConfig = document.getElementById("nav-mod-config");
             if (navConfig) {
                 const modsCfg = (PERMISSOES_OS.modulos_visiveis || {});
@@ -11356,27 +11426,28 @@
             }
             const navFotosOs = document.getElementById("nav-mod-fotos-os");
             if (navFotosOs) {
-                const showFotos = PERMISSOES_OS.controle_abas_ativo
-                    ? osModuloVisivel("fotos_os")
-                    : PERMISSOES_OS.pode_atribuir_mecanico;
-                navFotosOs.classList.toggle("d-none", !showFotos);
+                navFotosOs.classList.toggle("d-none", !osModuloVisivel("fotos_os"));
             }
-            if (PERMISSOES_OS.controle_abas_ativo
-                    ? fotosPodeVisualizar()
-                    : PERMISSOES_OS.pode_atribuir_mecanico) {
-                atualizarBadgeFotosOsPendentes();
+            if (fotosPodeVisualizar()) {
+                try { atualizarBadgeFotosOsPendentes(); } catch (err) { console.error("badge fotos:", err); }
             }
             if (!formOs) return;
             formOs.querySelectorAll("input, select, textarea").forEach(function (el) {
                 if (!el.name && !el.id) return;
                 if (el.type === "hidden") return;
                 if (el.id === "horas_uso_mecanico") return;
-                if (formularioCompleto) {
+                if (formularioCompleto || PERMISSOES_OS.perfil === "admin") {
                     el.disabled = false;
                     el.readOnly = false;
                     return;
                 }
-                if (mecanico && (osCargaRestrita || moduloOsVisivel)) {
+                if (mecanicoLegado && (osCargaRestrita || moduloOsVisivel)) {
+                    el.disabled = true;
+                    el.readOnly = true;
+                } else if (gran && osTemPermissao("ordem_os_geral_visualizar")) {
+                    el.disabled = false;
+                    el.readOnly = true;
+                } else {
                     el.disabled = true;
                     el.readOnly = true;
                 }
@@ -11402,6 +11473,7 @@
             if (abaNavAtivaEstaOculta()) {
                 irParaPrimeiraAbaNavVisivel();
             }
+            recarregarPainelModuloAtivo();
         }
 
         let presencaHeartbeatId = null;
@@ -12306,26 +12378,27 @@
                         if (btnSairApp) btnSairApp.disabled = false;
                     }
                     if (data.permissoes_os) {
-                        PERMISSOES_OS = data.permissoes_os;
-                        aplicarPermissoesOsUi();
+                        atualizarPermissoesOs(data.permissoes_os);
                     }
+                    if (!usarPermissoesGranulares()) {
+                        aplicarVisibilidadeConfiguracoes({
+                            podeGerenciarUsuarios: !!data.pode_gerenciar_usuarios,
+                            podeConfigurarApp: !!data.pode_configurar_app,
+                            podeAlterarOrientacaoPdf: !!data.pode_alterar_orientacao_pdf,
+                            podeVerProprioPerfil: !!(data.pode_ver_proprio_perfil ?? data.pode_editar_proprio_perfil),
+                            podeEditarProprioPerfil: !!data.pode_editar_proprio_perfil,
+                            podeVerRastreioAtividade: !!data.pode_ver_rastreio_atividade,
+                            podeExcluirRastreioAtividade: !!data.pode_excluir_rastreio_atividade,
+                            podeLimparRastreioAtividade: !!data.pode_limpar_rastreio_atividade,
+                            podeCriarUsuarios: !!data.pode_criar_usuarios,
+                            podeEditarUsuarios: !!data.pode_editar_usuarios,
+                            podeExcluirUsuarios: !!data.pode_excluir_usuarios,
+                        });
+                    }
+                    aplicarPermissoesOsUi();
                     if (data.usuario && USUARIO_SESSAO) {
                         Object.assign(USUARIO_SESSAO, data.usuario);
                     }
-                    aplicarVisibilidadeConfiguracoes({
-                        podeGerenciarUsuarios: !!data.pode_gerenciar_usuarios,
-                        podeConfigurarApp: !!data.pode_configurar_app,
-                        podeAlterarOrientacaoPdf: !!data.pode_alterar_orientacao_pdf,
-                        podeVerProprioPerfil: !!(data.pode_ver_proprio_perfil ?? data.pode_editar_proprio_perfil),
-                        podeVerProprioPerfil: !!(data.pode_ver_proprio_perfil ?? data.pode_editar_proprio_perfil),
-                        podeEditarProprioPerfil: !!data.pode_editar_proprio_perfil,
-                        podeVerRastreioAtividade: !!data.pode_ver_rastreio_atividade,
-                        podeExcluirRastreioAtividade: !!data.pode_excluir_rastreio_atividade,
-                        podeLimparRastreioAtividade: !!data.pode_limpar_rastreio_atividade,
-                        podeCriarUsuarios: !!data.pode_criar_usuarios,
-                        podeEditarUsuarios: !!data.pode_editar_usuarios,
-                        podeExcluirUsuarios: !!data.pode_excluir_usuarios,
-                    });
                     if (data.pdf_orientacao) aplicarOrientacaoPdfSalva(data.pdf_orientacao);
                     if (data.notificacoes_aparelho) {
                         cfgNotificacoesAparelhoEventos = Object.assign(
@@ -12540,7 +12613,7 @@
                 const dados = data.dados || {};
                 const cargaRestrita = !!data.carga_restrita;
                 if (data.permissoes_os) {
-                    PERMISSOES_OS = data.permissoes_os;
+                    atualizarPermissoesOs(data.permissoes_os);
                 }
                 await carregarMecanicosSelect(data.mecanico_id);
                 definirMecanicoOsAtual(data.mecanico_id, data.mecanico_nome);
@@ -12785,6 +12858,7 @@
         let cfgPodeLimparRastreioAtividade = false;
         let cfgPerfisApp = [];
         let cfgPermissoesPadraoOs = null;
+        let cfgPermissoesTemplates = {};
         let cfgPodeCriarUsuarios = false;
         let cfgPodeEditarUsuarios = false;
         let cfgPodeExcluirUsuarios = false;
@@ -13230,10 +13304,21 @@
             cfgPerfisApp = data.perfis || [];
         }
 
+        function templatePermissoesPerfilCfg(perfil) {
+            if (!perfil) return {};
+            if (perfil.modelo_base === "admin") return {};
+            const tmpl = cfgPermissoesTemplates[perfil.modelo_base];
+            if (tmpl && Object.keys(tmpl).length) return tmpl;
+            if (perfil.eh_sistema) {
+                return cfgPermissoesPadraoOs || {};
+            }
+            return perfil.permissoes_granulares || {};
+        }
+
         function aplicarTemplatePerfilSelecionado() {
             const perfil = perfilSelecionadoCfg();
             if (!perfil) return;
-            definirPermissoesGranularesFormulario(perfil.permissoes_granulares || {});
+            definirPermissoesGranularesFormulario(templatePermissoesPerfilCfg(perfil));
             renderizarArvorePermissoesCfg();
             aplicarPerfilFormularioUsuario();
         }
@@ -13273,12 +13358,40 @@
             }
             cfgArvorePermissoesDef = data.arvore || [];
             cfgPermissoesPadraoOs = data.permissoes_padrao || {};
+            cfgPermissoesTemplates = data.permissoes_templates || {};
             cfgArvoreChaves = data.chaves || [];
             if (cfgArvoreChaves.length) {
                 cfgArvoreChaves.forEach(function (k) {
                     if (cfgPermissoesEstado[k] === undefined) cfgPermissoesEstado[k] = false;
                 });
             }
+        }
+
+        function restaurarPermissoesPadraoPerfilCfg() {
+            const perfil = perfilSelecionadoCfg();
+            if (!perfil) {
+                definirCfgUsuariosFeedback("Selecione um perfil antes de restaurar.", "erro");
+                return;
+            }
+            if (perfil.modelo_base === "admin") {
+                definirCfgUsuariosFeedback("O perfil Administrador não usa árvore de permissões.", "info");
+                return;
+            }
+            const tmpl = cfgPermissoesTemplates[perfil.modelo_base];
+            if (!tmpl || !Object.keys(tmpl).length) {
+                definirCfgUsuariosFeedback(
+                    "Template padrão não carregado. Atualize a página e tente de novo.",
+                    "erro"
+                );
+                return;
+            }
+            definirPermissoesGranularesFormulario(tmpl);
+            renderizarArvorePermissoesCfg();
+            definirCfgUsuariosFeedback(
+                "Permissões padrão de «" + (perfil.nome || perfil.modelo_base) + "» aplicadas na árvore. " +
+                "Clique em «Salvar usuário» para gravar.",
+                "ok"
+            );
         }
 
         function definirPermissoesGranularesFormulario(gran) {
@@ -13387,7 +13500,7 @@
                     });
                     if (atendente) cfgUPerfil.value = String(atendente.id);
                     definirPermissoesGranularesFormulario(
-                        atendente ? (atendente.permissoes_granulares || {}) : (cfgPermissoesPadraoOs || {})
+                        atendente ? templatePermissoesPerfilCfg(atendente) : (cfgPermissoesPadraoOs || {})
                     );
                     renderizarArvorePermissoesCfg();
                     aplicarPerfilFormularioUsuario();
@@ -13690,19 +13803,21 @@
                     limites_efetivos: data.fotos_os_limites_efetivos,
                 });
                 aplicarConfigTipoOs(!!data.exibir_tipo_os);
-                aplicarVisibilidadeConfiguracoes({
-                    podeGerenciarUsuarios: !!data.pode_gerenciar_usuarios,
-                    podeConfigurarApp: !!data.pode_configurar_app,
-                    podeAlterarOrientacaoPdf: !!data.pode_alterar_orientacao_pdf,
-                    podeVerProprioPerfil: !!(data.pode_ver_proprio_perfil ?? data.pode_editar_proprio_perfil),
-                    podeEditarProprioPerfil: !!data.pode_editar_proprio_perfil,
-                    podeVerRastreioAtividade: !!data.pode_ver_rastreio_atividade,
-                    podeExcluirRastreioAtividade: !!data.pode_excluir_rastreio_atividade,
-                    podeLimparRastreioAtividade: !!data.pode_limpar_rastreio_atividade,
-                    podeCriarUsuarios: !!data.pode_criar_usuarios,
-                    podeEditarUsuarios: !!data.pode_editar_usuarios,
-                    podeExcluirUsuarios: !!data.pode_excluir_usuarios,
-                });
+                if (!usarPermissoesGranulares()) {
+                    aplicarVisibilidadeConfiguracoes({
+                        podeGerenciarUsuarios: !!data.pode_gerenciar_usuarios,
+                        podeConfigurarApp: !!data.pode_configurar_app,
+                        podeAlterarOrientacaoPdf: !!data.pode_alterar_orientacao_pdf,
+                        podeVerProprioPerfil: !!(data.pode_ver_proprio_perfil ?? data.pode_editar_proprio_perfil),
+                        podeEditarProprioPerfil: !!data.pode_editar_proprio_perfil,
+                        podeVerRastreioAtividade: !!data.pode_ver_rastreio_atividade,
+                        podeExcluirRastreioAtividade: !!data.pode_excluir_rastreio_atividade,
+                        podeLimparRastreioAtividade: !!data.pode_limpar_rastreio_atividade,
+                        podeCriarUsuarios: !!data.pode_criar_usuarios,
+                        podeEditarUsuarios: !!data.pode_editar_usuarios,
+                        podeExcluirUsuarios: !!data.pode_excluir_usuarios,
+                    });
+                }
                 if (data.pode_gerenciar_usuarios) {
                     await carregarUsuariosCfg();
                 }
@@ -13722,7 +13837,9 @@
                 } else if (usuarioRecebeNotificacoesFluxo() || usuarioPodeConfigNotificacoesAparelho()) {
                     await carregarConfigNotificacoesAparelho();
                 }
-                if (data.pode_ver_proprio_perfil && !data.pode_configurar_app) {
+                if (usarPermissoesGranulares()) {
+                    aplicarPermissoesOsUi();
+                } else if (data.pode_ver_proprio_perfil && !data.pode_configurar_app) {
                     abrirPainelCfg("cfg-sec-meu-perfil");
                 } else if (typeof aplicarPermissoesConfiguracoesUi === "function") {
                     aplicarPermissoesConfiguracoesUi();
@@ -15008,6 +15125,16 @@
         if (cfgUPerfil) {
             cfgUPerfil.addEventListener("change", function () {
                 aplicarTemplatePerfilSelecionado();
+            });
+        }
+        const btnCfgResetPermissoesPerfil = document.getElementById("btn-cfg-reset-permissoes-perfil");
+        if (btnCfgResetPermissoesPerfil) {
+            btnCfgResetPermissoesPerfil.addEventListener("click", function () {
+                garantirArvorePermissoesCfg().then(function () {
+                    restaurarPermissoesPadraoPerfilCfg();
+                }).catch(function (err) {
+                    definirCfgUsuariosFeedback(err.message || "Erro ao carregar árvore.", "erro");
+                });
             });
         }
         if (cfgUTelespectador) {
@@ -16716,7 +16843,7 @@
             const interna = reqEditorTipo === "interna" || (req && (req.tipo_requisicao || "os") === "interna");
             const finalizada = requisicaoEstaFinalizada(req);
             const podeResp = reqEhResponsavel();
-            const ehMec = PERMISSOES_OS.perfil === "mecanico";
+            const ehMec = ehMecanico();
             const ehAdmin = !!(USUARIO_SESSAO && USUARIO_SESSAO.perfil === "admin");
             const btnEnviar = document.getElementById("btn-req-enviar");
             const btnResponder = document.getElementById("btn-req-responder");
@@ -16762,7 +16889,8 @@
         }
 
         function atualizarBotaoFinalizarMecanico() {
-            if (!btnFinalizarServico) return;
+            const btn = document.getElementById("btn-finalizar-servico");
+            if (!btn) return;
             const num = numeroOsEmEdicao();
             const mecIdSessao = USUARIO_SESSAO && USUARIO_SESSAO.id;
             const selMec = document.getElementById("mecanico_id");
@@ -16771,7 +16899,7 @@
                 num && mecIdSessao && mecIdOs &&
                 String(mecIdSessao) === String(mecIdOs)
             );
-            btnFinalizarServico.classList.toggle("d-none", !atribuidaAMim);
+            btn.classList.toggle("d-none", !atribuidaAMim);
         }
 
         function agendarAutosaveMecanico() {
@@ -17215,7 +17343,7 @@
                 titulo: (document.getElementById("req-editor-titulo-campo") || {}).value || "",
                 itens: coletarItensReqEditor(),
                 observacao: document.getElementById("req-editor-obs").value,
-                como_responsavel: reqEhResponsavel(),
+                como_responsavel: reqEhResponsavel() && !ehMecanico(),
             };
             if (reqEhResponsavel() && reqEditorMecanicoId) {
                 payload.mecanico_id = reqEditorMecanicoId;
@@ -18709,6 +18837,7 @@
         if (navModRequisicao) {
             navModRequisicao.addEventListener("shown.bs.tab", function () {
                 aplicarPermissoesRequisicoesUi();
+                garantirAbaRequisicoesAtiva();
                 carregarRequisicoesPainel();
                 renderizarItensReqEditor();
             });
@@ -20897,6 +21026,8 @@
                     carregarAgendamentosDia();
                 });
             }
+            carregarAgendamentosMes();
+            carregarAgendamentosDia();
         }
 
         function iniciarAppPosCarregamento() {
@@ -20914,6 +21045,7 @@
             }
         }
 
+        try { aplicarPermissoesOsUi(); } catch (err) { console.error("perm os ui init:", err); }
         try { inicializarAgendamentos(); } catch (err) { console.error("init agendamentos:", err); }
         inicializarPreOrcamentos();
         iniciarAppPosCarregamento();

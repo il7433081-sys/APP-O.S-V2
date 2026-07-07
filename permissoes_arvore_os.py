@@ -32,6 +32,7 @@ _ROTULOS_ACAO: dict[str, str] = {
     "pedidos": "Pedidos de compra",
     "receber": "Receber avisos no aparelho",
     "ver_historico": "Ver histórico de serviços",
+    "ver_precos_pecas": "Ver preços de peças",
 }
 
 
@@ -169,7 +170,15 @@ PERMISSOES_ARVORE_OS: tuple[dict[str, Any], ...] = (
             _modulo(
                 "Requisições de O.S.",
                 "requisicoes_os",
-                ("visualizar", "criar", "editar", "enviar", "responder", "liberar_estoque"),
+                (
+                    "visualizar",
+                    "criar",
+                    "editar",
+                    "enviar",
+                    "responder",
+                    "liberar_estoque",
+                    "ver_precos_pecas",
+                ),
             ),
             _modulo(
                 "Requisições internas",
@@ -328,6 +337,17 @@ def chaves_explicitas_permissoes(valor: Any) -> set[str]:
     return set()
 
 
+def tem_permissoes_explicitas_salvas(valor: Any) -> bool:
+    """True só quando há JSON de permissões realmente gravado no banco."""
+    explicitas = chaves_explicitas_permissoes(valor)
+    if not explicitas:
+        return False
+    gran = normalizar_permissoes_granulares(valor)
+    if len(explicitas) < len(permissoes_granulares_vazias()):
+        return True
+    return any(gran.values())
+
+
 def permissoes_com_heranca_modelo(
     valor: Any,
     *,
@@ -410,7 +430,7 @@ def permissoes_padrao_usuario_os() -> dict[str, bool]:
 
 
 def permissoes_padrao_mecanico() -> dict[str, bool]:
-    """Template rápido: mecânico de campo."""
+    """Árvore padrão do mecânico de campo (sem funções de atendente/responsável)."""
     base = permissoes_granulares_vazias()
     for chave in (
         "ordem_os_geral_visualizar",
@@ -418,12 +438,6 @@ def permissoes_padrao_mecanico() -> dict[str, bool]:
         "ordem_os_geral_editar",
         "ordem_os_geral_gerar_pdf",
         "ordem_os_geral_finalizar",
-        "lista_os_geral_visualizar",
-        "lista_os_geral_atribuir_mecanico",
-        "lista_os_geral_pausar",
-        "lista_os_geral_retomar",
-        "lista_os_geral_cliente_avisado",
-        "lista_os_geral_copiar_retorno",
         "fotos_os_geral_visualizar",
         "fotos_os_geral_enviar",
         "requisicoes_os_visualizar",
@@ -433,7 +447,6 @@ def permissoes_padrao_mecanico() -> dict[str, bool]:
         "requisicoes_interna_visualizar",
         "requisicoes_interna_criar",
         "requisicoes_interna_editar",
-        "requisicoes_interna_finalizar_interna",
         "config_perfil_visualizar",
         "config_perfil_editar",
         "config_notificacoes_visualizar",
@@ -450,6 +463,11 @@ def permissoes_padrao_atendente() -> dict[str, bool]:
 
 def permissoes_padrao_operador() -> dict[str, bool]:
     return permissoes_padrao_usuario_os()
+
+
+def permissoes_template_restaurar_por_modelo(modelo: str) -> dict[str, bool]:
+    """Templates fixos da árvore para o botão Restaurar (não usa banco)."""
+    return permissoes_template_por_modelo(modelo)
 
 
 def permissoes_template_por_modelo(modelo: str) -> dict[str, bool]:
@@ -471,17 +489,22 @@ def permissoes_efetivas_usuario(
     controle_abas_ativo: bool,
     perfil: str,
     modelo_base: str | None = None,
+    permissoes_raw: Any = None,
 ) -> dict[str, bool]:
     """Resolve o que o usuário tem de fato (abas, APIs e checagens)."""
     modelo = str(modelo_base or perfil or "").strip().lower()
     if modelo == "admin":
         return permissoes_template_por_modelo("admin")
     gran = normalizar_permissoes_granulares(permissoes)
-    if controle_abas_ativo:
+    fonte_salva = permissoes_raw if permissoes_raw is not None else permissoes
+    tem_salvas = tem_permissoes_explicitas_salvas(fonte_salva)
+    if tem_salvas or controle_abas_ativo or any(gran.values()):
         return gran
     if modelo in {"mecanico", "atendente", "operador"}:
         return permissoes_template_por_modelo(modelo)
-    return gran if any(gran.values()) else permissoes_granulares_vazias()
+    if modelo == "personalizado":
+        return permissoes_granulares_vazias()
+    return permissoes_granulares_vazias()
 
 
 def arvore_permissoes_json() -> list[dict[str, Any]]:

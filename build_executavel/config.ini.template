@@ -1,0 +1,19 @@
+[app]
+database_path =
+modo_independente = 0
+instalacao_modo = inno
+icone_janela =
+
+[servidor]
+host = 0.0.0.0
+porta = 5000
+
+[ngrok]
+domain =
+authtoken =
+public_url =
+exe =
+
+[suporte]
+senha_salt =
+senha_hash =

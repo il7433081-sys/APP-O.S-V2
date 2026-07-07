@@ -1,0 +1,52 @@
+COMO ABRIR NO CELULAR / TABLET
+================================
+
+ACESSO EXTERNO (4G, outra Wi-Fi, WhatsApp) — ngrok gratuito
+------------------------------------------------------------
+Use quando o CLIENTE nao estiver na mesma rede da oficina.
+
+1. Uma vez por PC: configurar_ngrok.bat
+   - Crie conta em https://dashboard.ngrok.com/signup
+   - Cole o Authtoken quando o script pedir
+
+2. No dia a dia: iniciar_acesso_externo.bat
+   - Abre o servidor + tunel ngrok
+   - Mantenha a janela do ngrok aberta
+   - Gere QR Code ou link no sistema — funciona de qualquer lugar
+
+3. O app detecta a URL do ngrok automaticamente (nao precisa editar .env)
+
+MESMA REDE WI-FI (celular na oficina)
+------------------------------------
+Use iniciar_servidor.bat e o IP local (ex.: http://192.168.x.x:5000)
+
+PROBLEMA COMUM: Windows marca a Wi-Fi como "Rede Publica" e bloqueia o celular.
+
+SOLUCAO 1 - Mudar para Rede Privada (recomendado, sem admin)
+------------------------------------------------------------
+1. Configuracoes do Windows (Win + I)
+2. Rede e Internet -> Wi-Fi
+3. Clique na rede conectada (ex: JoxSuel)
+4. Perfil de rede -> escolha PRIVADA
+5. Rode liberar_acesso_rede.bat como Administrador (uma vez)
+6. Inicie: iniciar_servidor.bat
+7. No celular: http://10.0.10.177:5000  (confira o IP no cmd: ipconfig)
+
+SOLUCAO 2 - Hotspot do PC (funciona quase sempre)
+-------------------------------------------------
+1. Configuracoes -> Rede -> Zona sem fio movel -> LIGAR
+2. No celular, conecte na rede do hotspot do PC (nao na Wi-Fi do roteador)
+3. No PC: ipconfig -> veja o IPv4 do adaptador "Conexao Local*"
+   Geralmente: http://192.168.137.1:5000
+4. Inicie iniciar_servidor.bat no PC
+
+SOLUCAO 3 - Firewall (se ainda falhar)
+--------------------------------------
+Clique direito em liberar_acesso_rede.bat -> Executar como administrador
+
+CHECKLIST CELULAR
+-----------------
+[ ] Wi-Fi ligado (nao usar 4G/5G)
+[ ] Mesma rede do PC (ou hotspot do PC)
+[ ] Servidor rodando no PC (janela do iniciar_servidor.bat aberta)
+[ ] Endereco com http:// no inicio

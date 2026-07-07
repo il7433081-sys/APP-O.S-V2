@@ -1,0 +1,14 @@
+.env
+.flask_secret
+__pycache__/
+*.pyc
+*.pyo
+
+# Senha de suporte do build (nao versionar)
+barquiboboriginal/suporte_build.json
+barquiboboriginal/suporte_build.env
+
+# SQLite local (se usar banco proprio)
+*.db
+*.db-shm
+*.db-wal

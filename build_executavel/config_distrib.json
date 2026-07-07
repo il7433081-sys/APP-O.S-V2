@@ -1,0 +1,5 @@
+{
+  "instalacao_modo": "inno",
+  "launcher_modo": "seletor_interno_externo",
+  "porta_padrao": 5000
+}

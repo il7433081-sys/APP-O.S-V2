@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Assinatura digital — O.S.</title>
+    <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}" type="image/x-icon">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #1a1a1a;
+            --surface: #262626;
+            --border: #3a3a3a;
+            --text: #e8e8e8;
+            --muted: #9ca3af;
+            --accent: #1f6aa5;
+            --assinatura-altura: 11rem;
+        }
+        body {
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        }
+        .assinar-shell {
+            width: min(960px, 100%);
+            margin: 0 auto;
+        }
+        .assinar-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 1rem;
+            padding: 1.25rem;
+        }
+        .assinar-canvas-wrap {
+            border: 2px solid var(--accent);
+            border-radius: 0.75rem;
+            overflow: hidden;
+            background: #262626;
+            width: 100%;
+        }
+        #canvas-assinar {
+            display: block;
+            width: 100%;
+            height: var(--assinatura-altura);
+            min-height: var(--assinatura-altura);
+            touch-action: none;
+        }
+        .btn-accent {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: #fff;
+            min-height: 3rem;
+            font-weight: 600;
+        }
+        .btn-accent:hover { background: #185a8c; border-color: #185a8c; color: #fff; }
+        .text-muted { color: var(--muted) !important; }
+        .sucesso-icon { font-size: 3rem; color: #22c55e; }
+        .erro-icon { font-size: 3rem; color: #ef4444; }
+        @media (min-width: 768px) {
+            :root { --assinatura-altura: 12.5rem; }
+        }
+    </style>
+</head>
+<body class="d-flex align-items-center py-4 px-3">
+    <div class="assinar-shell w-100">
+        {% if erro %}
+        <div class="assinar-card text-center">
+            <i class="bi bi-exclamation-triangle erro-icon"></i>
+            <h1 class="h5 mt-3">{{ erro }}</h1>
+            {% if sessao and sessao.cliente_nome %}
+            <p class="text-muted small mb-0">{{ sessao.titulo }}</p>
+            {% endif %}
+        </div>
+        {% elif ja_assinado %}
+        <div class="assinar-card text-center">
+            <i class="bi bi-check-circle sucesso-icon"></i>
+            <h1 class="h5 mt-3">Assinatura já registrada</h1>
+            <p class="text-muted mb-0">Obrigado. Você pode fechar esta página.</p>
+            {% if sessao %}
+            <p class="small text-muted mt-2 mb-0">{{ sessao.titulo }}</p>
+            {% if sessao.assinante_nome %}
+            <p class="small text-muted mb-0">{{ sessao.assinante_nome }}</p>
+            {% endif %}
+            {% endif %}
+        </div>
+        {% else %}
+        <div class="assinar-card">
+            <div class="text-center mb-3">
+                <i class="bi bi-pen text-primary fs-3"></i>
+                <h1 class="h5 mt-2 mb-1">{{ sessao.titulo }}</h1>
+                {% if sessao.cliente_nome %}
+                <p class="text-muted small mb-0">Cliente: {{ sessao.cliente_nome }}</p>
+                {% endif %}
+                {% if sessao.numero_os %}
+                <p class="text-muted small">O.S. nº {{ sessao.numero_os }}</p>
+                {% endif %}
+            </div>
+
+            <div id="etapa-nome">
+                <label for="input-nome-assinar" class="form-label">Nome completo de quem assina</label>
+                <input type="text" class="form-control form-control-lg mb-3" id="input-nome-assinar"
+                       autocomplete="name" placeholder="Digite seu nome por extenso" aria-required="true">
+                <button type="button" class="btn btn-accent w-100" id="btn-continuar-nome">
+                    <i class="bi bi-arrow-right-circle"></i> Continuar para assinar
+                </button>
+            </div>
+
+            <div id="etapa-assinatura" class="d-none">
+                <p class="small text-muted text-center mb-2">
+                    Assinando como: <strong id="nome-assinante-exibido"></strong>
+                    <button type="button" class="btn btn-link btn-sm p-0 align-baseline" id="btn-alterar-nome">alterar</button>
+                </p>
+                <p class="small text-muted text-center mb-3">
+                    Use a faixa abaixo para assinar. Depois toque em <strong>Enviar</strong>.
+                </p>
+                {% if sessao.exige_pin %}
+                <div class="mb-3">
+                    <label for="input-pin-assinar" class="form-label small text-muted">Código de segurança (enviado pela oficina)</label>
+                    <input type="text" class="form-control text-center" id="input-pin-assinar"
+                           inputmode="numeric" pattern="[0-9]{4}" maxlength="4" autocomplete="off"
+                           placeholder="0000" aria-label="Código de segurança de 4 dígitos">
+                </div>
+                {% endif %}
+                <div class="assinar-canvas-wrap mb-3">
+                    <canvas id="canvas-assinar" aria-label="Área de assinatura"></canvas>
+                </div>
+                <div class="d-flex gap-2">
+                    <button type="button" class="btn btn-outline-secondary flex-grow-1" id="btn-limpar">
+                        <i class="bi bi-eraser"></i> Limpar
+                    </button>
+                    <button type="button" class="btn btn-accent flex-grow-1" id="btn-enviar">
+                        <i class="bi bi-send"></i> Enviar
+                    </button>
+                </div>
+            </div>
+            <p id="feedback" class="small text-center mt-3 mb-0 text-muted"></p>
+        </div>
+        {% endif %}
+        <p class="text-center text-muted small mt-4 mb-0">Ordem de Serviço Digital v{{ app_version }}</p>
+    </div>
+
+    {% if not erro and not ja_assinado and sessao %}
+    <script src="https://cdn.jsdelivr.net/npm/signature_pad@4.2.0/dist/signature_pad.umd.min.js"></script>
+    <script>
+        (function () {
+            const token = {{ sessao.token | tojson }};
+            const exigePin = {{ "true" if sessao.exige_pin else "false" }};
+            const EXPORT_W = 1120;
+            const EXPORT_H = 220;
+            const ALTURA_LOGICA = 176;
+
+            const etapaNome = document.getElementById("etapa-nome");
+            const etapaAssinatura = document.getElementById("etapa-assinatura");
+            const inputNome = document.getElementById("input-nome-assinar");
+            const btnContinuarNome = document.getElementById("btn-continuar-nome");
+            const btnAlterarNome = document.getElementById("btn-alterar-nome");
+            const nomeExibido = document.getElementById("nome-assinante-exibido");
+            const inputPin = document.getElementById("input-pin-assinar");
+            const canvas = document.getElementById("canvas-assinar");
+            const btnLimpar = document.getElementById("btn-limpar");
+            const btnEnviar = document.getElementById("btn-enviar");
+            const feedback = document.getElementById("feedback");
+
+            let pad = null;
+            let nomeAssinante = "";
+
+            function alturaAtual() {
+                const px = getComputedStyle(document.documentElement)
+                    .getPropertyValue("--assinatura-altura").trim();
+                if (px.endsWith("rem")) {
+                    return parseFloat(px) * parseFloat(getComputedStyle(document.documentElement).fontSize);
+                }
+                return ALTURA_LOGICA;
+            }
+
+            function redimensionar() {
+                if (!pad || !canvas) return;
+                const ratio = Math.max(window.devicePixelRatio || 1, 1);
+                const largura = canvas.parentElement.clientWidth || window.innerWidth - 48;
+                const altura = alturaAtual();
+                const dados = pad && !pad.isEmpty() ? pad.toData() : null;
+                canvas.style.width = largura + "px";
+                canvas.style.height = altura + "px";
+                canvas.width = Math.floor(largura * ratio);
+                canvas.height = Math.floor(altura * ratio);
+                const ctx = canvas.getContext("2d");
+                ctx.setTransform(1, 0, 0, 1, 0, 0);
+                ctx.scale(ratio, ratio);
+                pad.clear();
+                if (dados && dados.length) pad.fromData(dados);
+            }
+
+            function iniciarPad() {
+                if (pad) return;
+                pad = new SignaturePad(canvas, {
+                    backgroundColor: "rgb(38, 38, 38)",
+                    penColor: "rgb(232, 232, 232)",
+                    minWidth: 1.4,
+                    maxWidth: 3.8,
+                });
+                redimensionar();
+                window.addEventListener("resize", function () {
+                    requestAnimationFrame(redimensionar);
+                });
+            }
+
+            function validarNome() {
+                const nome = (inputNome.value || "").trim();
+                if (nome.length < 3) {
+                    feedback.textContent = "Informe o nome completo de quem está assinando.";
+                    feedback.className = "small text-center mt-3 mb-0 text-warning";
+                    return "";
+                }
+                feedback.textContent = "";
+                return nome;
+            }
+
+            function mostrarEtapaAssinatura() {
+                const nome = validarNome();
+                if (!nome) return;
+                nomeAssinante = nome;
+                if (nomeExibido) nomeExibido.textContent = nome;
+                etapaNome.classList.add("d-none");
+                etapaAssinatura.classList.remove("d-none");
+                iniciarPad();
+                feedback.textContent = "";
+            }
+
+            btnContinuarNome.addEventListener("click", mostrarEtapaAssinatura);
+            inputNome.addEventListener("keydown", function (ev) {
+                if (ev.key === "Enter") {
+                    ev.preventDefault();
+                    mostrarEtapaAssinatura();
+                }
+            });
+            if (btnAlterarNome) {
+                btnAlterarNome.addEventListener("click", function () {
+                    etapaAssinatura.classList.add("d-none");
+                    etapaNome.classList.remove("d-none");
+                    if (inputNome) inputNome.focus();
+                });
+            }
+
+            btnLimpar.addEventListener("click", function () {
+                if (pad) pad.clear();
+                feedback.textContent = "";
+            });
+
+            function exportarAssinaturaEncaixada() {
+                return new Promise(function (resolve, reject) {
+                    const padding = 10;
+                    const src = pad.toDataURL("image/png");
+                    const img = new Image();
+                    img.onload = function () {
+                        const tmp = document.createElement("canvas");
+                        tmp.width = EXPORT_W;
+                        tmp.height = EXPORT_H;
+                        const ctx = tmp.getContext("2d");
+                        ctx.fillStyle = "rgb(38, 38, 38)";
+                        ctx.fillRect(0, 0, EXPORT_W, EXPORT_H);
+                        const maxW = EXPORT_W - padding * 2;
+                        const maxH = EXPORT_H - padding * 2;
+                        const escalaW = (maxW * 0.94) / img.width;
+                        const escalaH = maxH / img.height;
+                        const escala = Math.min(escalaW, escalaH, 2.5);
+                        const dw = img.width * escala;
+                        const dh = img.height * escala;
+                        ctx.drawImage(img, (EXPORT_W - dw) / 2, (EXPORT_H - dh) / 2, dw, dh);
+                        resolve(tmp.toDataURL("image/png"));
+                    };
+                    img.onerror = function () { reject(new Error("imagem")); };
+                    img.src = src;
+                });
+            }
+
+            btnEnviar.addEventListener("click", async function () {
+                if (!nomeAssinante) {
+                    feedback.textContent = "Informe o nome antes de assinar.";
+                    feedback.className = "small text-center mt-3 mb-0 text-warning";
+                    etapaAssinatura.classList.add("d-none");
+                    etapaNome.classList.remove("d-none");
+                    return;
+                }
+                if (exigePin && inputPin && !/^\d{4}$/.test((inputPin.value || "").trim())) {
+                    feedback.textContent = "Informe o código de 4 dígitos enviado pela oficina.";
+                    feedback.className = "small text-center mt-3 mb-0 text-warning";
+                    return;
+                }
+                if (!pad || pad.isEmpty()) {
+                    feedback.textContent = "Desenhe a assinatura antes de enviar.";
+                    feedback.className = "small text-center mt-3 mb-0 text-warning";
+                    return;
+                }
+                btnEnviar.disabled = true;
+                feedback.textContent = "Enviando...";
+                feedback.className = "small text-center mt-3 mb-0 text-muted";
+                try {
+                    const imagem = await exportarAssinaturaEncaixada();
+                    const resp = await fetch("/api/assinatura/" + encodeURIComponent(token), {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            imagem: imagem,
+                            assinante_nome: nomeAssinante,
+                            pin: exigePin && inputPin ? (inputPin.value || "").trim() : undefined,
+                        }),
+                    });
+                    const data = await resp.json();
+                    if (!resp.ok || !data.sucesso) {
+                        feedback.textContent = data.mensagem || "Não foi possível enviar.";
+                        feedback.className = "small text-center mt-3 mb-0 text-danger";
+                        btnEnviar.disabled = false;
+                        return;
+                    }
+                    document.querySelector(".assinar-card").innerHTML =
+                        '<div class="text-center py-3">' +
+                        '<i class="bi bi-check-circle sucesso-icon"></i>' +
+                        '<h1 class="h5 mt-3">Assinatura enviada!</h1>' +
+                        '<p class="text-muted mb-0">Obrigado, <strong>' + nomeAssinante.replace(/</g, "") + '</strong>.</p>' +
+                        '<p class="text-muted small mt-1 mb-0">Você pode fechar esta página.</p></div>';
+                } catch (err) {
+                    feedback.textContent = "Erro de conexão. Tente novamente.";
+                    feedback.className = "small text-center mt-3 mb-0 text-danger";
+                    btnEnviar.disabled = false;
+                }
+            });
+
+            if (inputNome) inputNome.focus();
+        })();
+    </script>
+    {% endif %}
+</body>
+</html>

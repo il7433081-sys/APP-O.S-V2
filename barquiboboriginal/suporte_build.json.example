@@ -1,0 +1,4 @@
+{
+  "senha_suporte": "COLOQUE_SUA_SENHA_AQUI",
+  "observacao": "Usado somente ao rodar criar_instalador.ps1. Nao commitar senha real."
+}

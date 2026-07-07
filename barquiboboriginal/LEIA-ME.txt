@@ -1,0 +1,23 @@
+Pasta de configuracao de BUILD (desenvolvedor) — App OS Digital
+================================================================
+
+Esta pasta NAO vai para o cliente. Serve para o gerador do instalador.
+
+Arquivos:
+  suporte_build.json   (principal)  OU  suporte_build.env
+  suporte_build.json.example         modelo para copiar
+
+Como usar:
+  1. Copie suporte_build.json.example para suporte_build.json
+  2. Edite e coloque sua senha em "senha_suporte"
+  3. Rode build_executavel/criar_instalador.ps1
+  4. O instalador grava apenas o HASH da senha no config.ini do cliente
+
+No PC instalado:
+  - A senha em texto puro NAO fica no disco
+  - Para entrar no painel Config: use a senha que voce definiu aqui
+  - Para mudar depois: painel Config > Seguranca > Alterar senha de suporte
+
+IMPORTANTE:
+  - Nao commite suporte_build.json com senha real no Git
+  - Guarde a senha em local seguro (gerenciador de senhas)

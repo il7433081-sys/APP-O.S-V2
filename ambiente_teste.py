@@ -22,10 +22,34 @@ TABELAS_DADOS_APP = (
 )
 
 
+NOME_ARQUIVO_BANCO_TESTE = "app_os_ambiente_teste.db"
+CHAVE_CAMINHO_BANCO_TESTE = "caminho_banco_teste_os"
+
+
 def caminho_banco_teste(app_dir: Path) -> Path:
     pasta = app_dir / "dados"
     pasta.mkdir(parents=True, exist_ok=True)
-    return pasta / "app_os_ambiente_teste.db"
+    return pasta / NOME_ARQUIVO_BANCO_TESTE
+
+
+def normalizar_caminho_banco_teste(entrada: str | Path) -> Path:
+    """Aceita pasta do App O.S., pasta dados/ ou arquivo .db."""
+    p = Path(entrada).expanduser()
+    if not str(p).strip():
+        raise ValueError("caminho vazio")
+    p = p.resolve()
+    if p.is_file():
+        return p
+    if p.is_dir():
+        candidatos = (
+            p / "dados" / NOME_ARQUIVO_BANCO_TESTE,
+            p / NOME_ARQUIVO_BANCO_TESTE,
+        )
+        for candidato in candidatos:
+            if candidato.is_file():
+                return candidato.resolve()
+        return candidatos[0].resolve()
+    raise ValueError(f"caminho inválido: {p}")
 
 
 def _ddl_ordens_servico() -> str:

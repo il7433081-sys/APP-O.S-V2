@@ -143,6 +143,7 @@ from ambiente_teste import (
     garantir_banco_teste,
     iniciar_schema_banco_app,
     limpar_dados_app,
+    normalizar_caminho_banco_teste,
     resumo_banco_app,
 )
 from sandbox_treinamento import (
@@ -289,6 +290,7 @@ configurar_banco_nav_pos_acao(DATABASE_PRINCIPAL_PATH)
 configurar_banco_notificacoes_aparelho(DATABASE_PRINCIPAL_PATH)
 configurar_banco_fotos_os_config(DATABASE_PRINCIPAL_PATH)
 _CHAVE_AMBIENTE_TESTE = "ambiente_teste_ativo"
+_CHAVE_CAMINHO_BANCO_TESTE = "caminho_banco_teste_os"
 APP_VERSION = "2.14.0"
 
 _PERFIS_VALIDOS = frozenset({"admin", "operador", "atendente", "mecanico"})
@@ -561,9 +563,26 @@ def _definir_sandbox_treinamento_sessao(ativo: bool) -> None:
         session.pop(_SESSAO_SANDBOX_TREINAMENTO, None)
 
 
+def _resolver_caminho_teste_app() -> Path:
+    if not DATABASE_PRINCIPAL_PATH.is_file():
+        return DATABASE_TESTE_PATH
+    try:
+        with conexao_principal() as conn:
+            _init_app_os_config(conn)
+            row = conn.execute(
+                "SELECT valor FROM app_os_config WHERE chave = ?",
+                (_CHAVE_CAMINHO_BANCO_TESTE,),
+            ).fetchone()
+            if row and str(row["valor"] or "").strip():
+                return normalizar_caminho_banco_teste(str(row["valor"]).strip())
+    except (sqlite3.Error, ValueError):
+        pass
+    return DATABASE_TESTE_PATH
+
+
 def _caminho_banco_app() -> Path:
     if _ambiente_teste_ativo():
-        return DATABASE_TESTE_PATH
+        return _resolver_caminho_teste_app()
     if _sandbox_treinamento_ativo_sessao():
         return DATABASE_SANDBOX_TREINAMENTO_PATH
     return DATABASE_PRINCIPAL_PATH

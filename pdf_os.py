@@ -1403,4 +1403,35 @@ def dados_os_de_registro(
         dados["assinatura_tecnico"] = assinatura_tecnico
     if assinatura_cliente:
         dados["assinatura_cliente"] = assinatura_cliente
+    _mesclar_colunas_os_no_payload(row, dados)
     return dados, int(row["numero_os"])
+
+
+def _mesclar_colunas_os_no_payload(row: Any, dados: dict[str, Any]) -> None:
+    """Garante campos gravados em colunas da tabela ao reabrir a O.S."""
+    if not hasattr(row, "keys"):
+        return
+    chaves = set(row.keys())
+    for coluna, chave in (
+        ("nome_atendente", "nome_atendente"),
+        ("data_entrada", "data_entrada"),
+        ("cliente_id", "cliente_id"),
+        ("cliente_nome", "cliente_nome"),
+        ("cliente_cpf_cnpj", "cliente_cpf_cnpj"),
+    ):
+        if coluna not in chaves:
+            continue
+        valor = row[coluna]
+        if valor is None:
+            continue
+        texto = str(valor).strip()
+        if not texto:
+            continue
+        if not dados.get(chave):
+            if coluna == "cliente_id":
+                try:
+                    dados[chave] = int(valor)
+                except (TypeError, ValueError):
+                    dados[chave] = valor
+            else:
+                dados[chave] = valor

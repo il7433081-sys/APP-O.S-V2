@@ -7594,15 +7594,33 @@
                 opt.textContent = motor.rotulo;
                 seletorMotor.appendChild(opt);
             });
+            if (cadMotoresPodeCriar()) {
+                const optNovo = document.createElement("option");
+                optNovo.value = "__novo__";
+                optNovo.textContent = "+ Cadastrar outro motor / embarcação";
+                seletorMotor.appendChild(optNovo);
+            }
             if (selecionarId) {
                 seletorMotor.value = String(selecionarId);
-            } else if (motores.length === 1) {
+            } else if (motores.length === 1 && !cadMotoresPodeCriar()) {
                 seletorMotor.value = String(motores[0].id);
             }
         }
 
         function aplicarMotorSelecionado() {
             if (!seletorMotor) return;
+            if (seletorMotor.value === "__novo__") {
+                const motorIdEl = document.getElementById("motor_id");
+                if (motorIdEl) motorIdEl.value = "";
+                limparMotorForm();
+                definirFeedback(
+                    motorFeedback,
+                    "Preencha os dados do novo motor e use «Salvar motor no cadastro».",
+                    "info"
+                );
+                atualizarResumoMotoresCliente(motoresCliente.length, "");
+                return;
+            }
             const id = parseInt(seletorMotor.value, 10);
             const motor = motoresCliente.find(function (m) { return m.id === id; });
             if (motor) {
@@ -7664,10 +7682,20 @@
                     aplicarMotorSelecionado();
                 }
 
-                if (motoresCliente.length === 1) {
+                if (motoresCliente.length === 1 && !cadMotoresPodeCriar()) {
                     definirFeedback(motorFeedback, "1 motor — já selecionado e preenchido.", "ok");
+                } else if (motoresCliente.length === 1) {
+                    definirFeedback(
+                        motorFeedback,
+                        "1 motor cadastrado — selecionado ou escolha «Cadastrar outro».",
+                        "ok"
+                    );
                 } else {
-                    definirFeedback(motorFeedback, motoresCliente.length + " motores — escolha na lista acima.", "info");
+                    definirFeedback(
+                        motorFeedback,
+                        motoresCliente.length + " motores — escolha na lista ou cadastre outro.",
+                        "info"
+                    );
                 }
             } catch (err) {
                 definirFeedback(motorFeedback, "Falha ao carregar motores. Reinicie o servidor Flask.", "erro");
@@ -11453,7 +11481,19 @@
                 }
             });
             const horasMec = document.getElementById("horas_uso_mecanico");
-            if (horasMec) horasMec.classList.add("d-none");
+            const horasOrig = document.getElementById("horas_uso");
+            const mecanicoPerfil = PERMISSOES_OS.perfil === "mecanico";
+            if (horasMec) {
+                const mostrarHorasMec = mecanicoPerfil || osCargaRestrita;
+                horasMec.classList.toggle("d-none", !mostrarHorasMec);
+                if (mostrarHorasMec) {
+                    horasMec.disabled = false;
+                    horasMec.readOnly = false;
+                }
+            }
+            if (horasOrig && mecanicoPerfil && !formularioCompleto) {
+                horasOrig.readOnly = true;
+            }
             formOs.querySelectorAll(".btn-qr-assinatura, .btn-link-assinatura, .btn-limpar-assinatura").forEach(function (btn) {
                 if (formularioCompleto) {
                     btn.disabled = false;
@@ -12619,15 +12659,38 @@
                 definirMecanicoOsAtual(data.mecanico_id, data.mecanico_nome);
                 await aplicarDadosNoFormulario(dados);
                 osCargaRestrita = cargaRestrita;
+                const clienteId = data.cliente_id || dados.cliente_id;
+                if (clienteId) {
+                    const cidEl = document.getElementById("cliente_id");
+                    if (cidEl) cidEl.value = String(clienteId);
+                    dados.cliente_id = clienteId;
+                }
                 sincronizarMecanicoOsNoSelect();
                 preencherAnalistaDoMecanico(true);
-                if (!cargaRestrita && dados.cliente_id) {
+                if (!cargaRestrita && clienteId) {
                     const motorId = dados.motor_id ? parseInt(dados.motor_id, 10) : null;
-                    await carregarMotoresCliente(dados.cliente_id, motorId, false);
+                    const horasSalvas = dados.horas_uso || "";
+                    const entregueSalvo = dados.entregue_por || "";
+                    const atendenteSalvo = dados.nome_atendente || "";
+                    await carregarMotoresCliente(clienteId, motorId, false);
                     formOs.querySelectorAll("input, select, textarea").forEach(function (el) {
                         aplicarValorCampo(el, dados);
                     });
                     aplicarRadiosECheckboxes(dados);
+                    if (horasSalvas) {
+                        const horasOrig = document.getElementById("horas_uso");
+                        const horasMec = document.getElementById("horas_uso_mecanico");
+                        if (horasOrig) horasOrig.value = String(horasSalvas);
+                        if (horasMec) horasMec.value = String(horasSalvas);
+                    }
+                    if (entregueSalvo) {
+                        const ent = document.getElementById("entregue_por");
+                        if (ent) ent.value = String(entregueSalvo);
+                    }
+                    if (atendenteSalvo) {
+                        const at = document.getElementById("nome_atendente");
+                        if (at) at.value = String(atendenteSalvo);
+                    }
                 }
                 if (osCargaRestrita) {
                     definirAlertaOs(

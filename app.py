@@ -347,6 +347,12 @@ _CAMPOS_MECANICO_EDITAVEIS = frozenset({
 
 _CHAVES_PAYLOAD_PARCIAL_MECANICO = _CAMPOS_MECANICO_EDITAVEIS | {"numero_os"}
 
+_CAMPOS_FORMULARIO_OS_PRESERVAR = frozenset({
+    "nome_atendente",
+    "entregue_por",
+    "data_entrada",
+})
+
 _METADADOS_OS_PAYLOAD = frozenset({
     "pre_orcamento_id",
     "pre_orcamento_numero",
@@ -1134,6 +1140,37 @@ def _sync_oficina_status_os(
                 status_web,
                 dados_json=dados_json,
             )
+            conn.commit()
+    except sqlite3.Error:
+        pass
+
+
+def _sync_oficina_horas_os(
+    numero_os: int,
+    payload: dict[str, Any],
+    *,
+    dados_json: str | None = None,
+) -> None:
+    """Propaga horas do motor (App O.S.) para servicos.horas_servico no Sistema Oficina."""
+    from sync_oficina_servicos import sincronizar_horas_app_para_oficina
+
+    motor_id: int | None = None
+    bruto = payload.get("motor_id")
+    if bruto not in (None, ""):
+        try:
+            motor_id = int(bruto)
+        except (TypeError, ValueError):
+            motor_id = None
+    try:
+        with conexao_principal() as conn:
+            sincronizar_horas_app_para_oficina(
+                conn,
+                int(numero_os),
+                payload.get("horas_uso"),
+                motor_id=motor_id,
+                dados_json=dados_json,
+            )
+            conn.commit()
     except sqlite3.Error:
         pass
 
@@ -1461,6 +1498,24 @@ def _buscar_cliente_para_pre_orcamento(
         if (row["nome"] or "").strip().lower() == nome_lower:
             return row
     return None
+
+
+def _preservar_campos_formulario_os(
+    payload: dict[str, Any],
+    dados_existentes: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Evita perder atendente/entregue/data quando o save não reenvia esses campos."""
+    if not dados_existentes:
+        return payload
+    saida = dict(payload)
+    for chave in _CAMPOS_FORMULARIO_OS_PRESERVAR:
+        novo = saida.get(chave)
+        if novo not in (None, ""):
+            continue
+        antigo = dados_existentes.get(chave)
+        if antigo not in (None, ""):
+            saida[chave] = antigo
+    return saida
 
 
 def _preservar_metadados_os_payload(
@@ -10583,6 +10638,7 @@ def salvar_os():
                     )
 
                 payload = _preservar_metadados_os_payload(payload, dados_para_assinatura)
+                payload = _preservar_campos_formulario_os(payload, dados_para_assinatura)
 
                 _preservar_assinaturas_colunas_payload(
                     payload, row_existente, dados_para_assinatura
@@ -10700,6 +10756,12 @@ def salvar_os():
             int(numero_os),
             sync_status_oficina,
             dados_json=sync_dados_json_oficina,
+        )
+    if numero_os:
+        _sync_oficina_horas_os(
+            int(numero_os),
+            payload,
+            dados_json=json.dumps(payload, ensure_ascii=False),
         )
 
     agendamento_id_raw = payload.get("agendamento_id")

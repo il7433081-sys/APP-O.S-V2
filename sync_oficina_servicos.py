@@ -175,6 +175,62 @@ def _parse_dados_json(dados_json: str | None) -> dict[str, Any]:
     return dados if isinstance(dados, dict) else {}
 
 
+def _parse_horas_uso(valor: Any) -> float | None:
+    if valor in (None, ""):
+        return None
+    texto = str(valor).strip().lower().replace("h", "").replace(" ", "")
+    texto = texto.replace(",", ".")
+    try:
+        horas = float(texto)
+    except ValueError:
+        return None
+    return max(0.0, horas)
+
+
+def sincronizar_horas_app_para_oficina(
+    conn_principal: sqlite3.Connection,
+    numero_os: int,
+    horas_uso: Any,
+    *,
+    motor_id: int | None = None,
+    dados_json: str | None = None,
+) -> None:
+    """Propaga horas informadas no App O.S. para servicos.horas_servico e cadastro do motor."""
+    horas = _parse_horas_uso(horas_uso)
+    if horas is None and dados_json:
+        dados = _parse_dados_json(dados_json)
+        horas = _parse_horas_uso(dados.get("horas_uso"))
+        if motor_id is None and dados.get("motor_id") not in (None, ""):
+            try:
+                motor_id = int(dados["motor_id"])
+            except (TypeError, ValueError):
+                motor_id = None
+    if horas is None:
+        return
+    conn_principal.execute(
+        """
+        UPDATE servicos
+        SET horas_servico = ?
+        WHERE numero_os_digital = ?
+          AND UPPER(COALESCE(tipo_documento, '')) = 'NOTA'
+        """,
+        (horas, int(numero_os)),
+    )
+    mid = motor_id
+    if mid is None:
+        return
+    try:
+        mid = int(mid)
+    except (TypeError, ValueError):
+        return
+    if mid <= 0:
+        return
+    conn_principal.execute(
+        "UPDATE motores SET horas = ? WHERE id = ?",
+        (horas, mid),
+    )
+
+
 def _aplicar_status_servico(
     conn: sqlite3.Connection,
     servico_id: int,

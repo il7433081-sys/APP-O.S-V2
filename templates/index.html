@@ -2722,11 +2722,6 @@
                     var vertical = ori === "vertical";
                     h.checked = !vertical;
                     v.checked = vertical;
-                    var lbl = document.getElementById("pdf-orientacao-salva-label");
-                    if (lbl) {
-                        lbl.textContent = vertical ? "Vertical" : "Horizontal";
-                        lbl.classList.remove("d-none");
-                    }
                 })();
                 </script>
                 <button type="button" class="btn btn-outline-secondary" id="btn-nova-os" title="Iniciar uma O.S. em branco">
@@ -2737,6 +2732,10 @@
                 </button>
                 <button type="button" class="btn btn-os-primary" id="btn-salvar-os">
                     <i class="bi bi-save me-1"></i> Salvar O.S.
+                </button>
+                <button type="button" class="btn btn-outline-warning d-none" id="btn-os-temp-finalizada"
+                        title="Alterações só nesta sessão — refletem no PDF até trocar de O.S.">
+                    <i class="bi bi-clock-history me-1"></i> Alteração temporária
                 </button>
                 <button type="button" class="btn btn-success d-none" id="btn-finalizar-servico"
                         title="Marcar serviço como pronto (confirma com senha)">
@@ -2837,6 +2836,7 @@
                         title="Requisição">
                     <i class="bi bi-cart-check"></i>
                     <span class="os-sidebar-label">Requisição</span>
+                    <span class="badge rounded-pill bg-warning text-dark ms-1 d-none" id="badge-req-pendencias-integracao">0</span>
                 </button>
                 <button class="nav-link d-none" id="nav-mod-estoque" type="button" role="tab"
                         data-bs-toggle="tab" data-bs-target="#pane-mod-estoque"
@@ -3285,12 +3285,12 @@
                         <div class="col-12 col-md-6 col-lg-4">
                             <label for="cliente_cpf_cnpj" class="form-label">CPF / CNPJ</label>
                             <input type="text" class="form-control" id="cliente_cpf_cnpj" name="cliente_cpf_cnpj"
-                                   placeholder="000.000.000-00">
+                                   placeholder="000.000.000-00 ou 00.000.000/0000-00">
                         </div>
                         <div class="col-12 col-md-6 col-lg-4">
                             <label for="cliente_rg" class="form-label">RG</label>
                             <input type="text" class="form-control" id="cliente_rg" name="cliente_rg"
-                                   placeholder="Documento de identidade">
+                                   placeholder="00.000.000-0">
                         </div>
                         <div class="col-12 col-md-8 col-lg-6">
                             <label for="cliente_endereco" class="form-label">Endereço</label>
@@ -4345,7 +4345,7 @@
                 </p>
             </div>
             <div class="row g-3">
-                <div class="col-12 col-lg-5">
+                <div class="col-12 col-lg-5" id="req-col-lista">
                     <div class="os-card">
                         <div class="os-card-title">Lista</div>
                         <ul class="nav nav-pills nav-fill small mb-2 gap-1" id="req-lista-subabas" role="tablist">
@@ -4361,7 +4361,23 @@
                                 <button type="button" class="nav-link py-1 px-2" data-req-aba="internas"
                                         role="tab">Uso interno</button>
                             </li>
+                            <li class="nav-item" role="presentation">
+                                <button type="button" class="nav-link py-1 px-2" data-req-aba="pendencias"
+                                        role="tab">
+                                    Pendências
+                                    <span class="badge rounded-pill bg-warning text-dark ms-1 d-none"
+                                          id="badge-req-aba-pendencias">0</span>
+                                </button>
+                            </li>
                         </ul>
+                        <div id="req-pendencias-toolbar" class="d-none mb-2">
+                            <p class="small text-muted mb-2">
+                                Conferência entre App O.S. e Controle de O.S. quando etapas foram puladas na Oficina.
+                            </p>
+                            <button type="button" class="btn btn-sm btn-success" id="btn-req-resolver-pendencias">
+                                <i class="bi bi-check2-circle"></i> Salvar / resolver selecionados
+                            </button>
+                        </div>
                         <div id="lista-requisicoes-painel">
                             <p class="text-muted small">Carregando...</p>
                         </div>
@@ -5130,6 +5146,17 @@
                             </div>
                             <p class="small text-muted mb-0">
                                 Por usuário: em Login e usuários, defina visibilidade e permissão de edição para cada mecânico.
+                            </p>
+                            <div class="form-check form-switch mb-3 mt-3">
+                                <input class="form-check-input" type="checkbox" role="switch"
+                                       id="cfg-os-edicao-temporaria" autocomplete="off">
+                                <label class="form-check-label" for="cfg-os-edicao-temporaria">
+                                    Permitir <strong>alteração temporária</strong> em O.S. finalizada (só na sessão/PDF)
+                                </label>
+                            </div>
+                            <p class="small text-muted mb-0">
+                                Desativado por padrão. Quando ativo, quem pode editar O.S. finalizada verá o botão
+                                de alteração temporária (não grava no banco).
                             </p>
                             <hr class="my-3">
                             <div class="mb-3" id="cfg-bloco-fotos-os">
@@ -6059,6 +6086,7 @@
 <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/signature_pad@4.2.0/dist/signature_pad.umd.min.js"
         crossorigin="anonymous"></script>
+<script src="{{ url_for('static', filename='js/mascaras_documento.js') }}"></script>
 
 <script>
     (function () {
@@ -6102,6 +6130,7 @@
 
         function fecharOverlaysApp() {
             fecharOsModal(false);
+            fecharModalEditarOsFinalizada(null);
             fecharPopoverSenha(null);
             const popBackdrop = document.getElementById("os-popover-senha-backdrop");
             const pop = document.getElementById("os-popover-senha");
@@ -6496,6 +6525,213 @@
         let podeExcluirOsCancelada = false;
 
         const STATUS_OS_BLOQUEIA_MECANICO = ["pronto_mecanico", "cliente_avisado", "entregue"];
+        const STATUS_OS_FINALIZADA = ["pronto_mecanico", "cliente_avisado", "entregue", "fechado", "concluido"];
+
+        let osStatusAtual = "";
+        let osDadosOriginaisSnapshot = null;
+        let osOverridesTemporarios = {};
+        let _osModalEditFinalResolve = null;
+
+        const ROTULOS_CAMPOS_OS = {
+            data_entrada: "Data de entrada",
+            nome_atendente: "Atendente",
+            entregue_por: "Entregue por",
+            cliente_nome: "Cliente",
+            cliente_cpf_cnpj: "CPF/CNPJ",
+            cliente_endereco: "Endereço",
+            cliente_numero: "Número",
+            cliente_bairro: "Bairro",
+            cliente_cidade: "Cidade",
+            cliente_estado: "UF",
+            cliente_cep: "CEP",
+            cliente_telefone: "Telefone",
+            cliente_celular: "Celular",
+            cliente_rg: "RG",
+            embarcacao_nome: "Embarcação",
+            num_chassi: "N° chassi",
+            horas_uso: "Horas do motor",
+            fabricante: "Fabricante",
+            modelo: "Modelo",
+            alegacoes_cliente: "Alegações do cliente",
+            constatacao_diagnostico: "Constatação / diagnóstico",
+            diag_analista_nome: "Analista técnico",
+            diag_data: "Data do diagnóstico",
+            observacoes: "Observações",
+            marina: "Marina",
+        };
+
+        function osEstaFinalizada(status) {
+            return STATUS_OS_FINALIZADA.indexOf(String(status || "").trim()) !== -1;
+        }
+
+        function podeEditarOsFinalizada() {
+            return PERMISSOES_OS.perfil === "admin" ||
+                !!PERMISSOES_OS.pode_editar_os_finalizada ||
+                osTemPermissao("ordem_os_geral_editar_finalizada");
+        }
+
+        function osEdicaoTemporariaHabilitada() {
+            return !!PERMISSOES_OS.os_edicao_temporaria_habilitada;
+        }
+
+        function normalizarValorCampoOs(val) {
+            if (val === undefined || val === null) return "";
+            if (Array.isArray(val)) return val.map(String).sort().join("|");
+            return String(val).trim();
+        }
+
+        function rotuloCampoOs(chave) {
+            if (ROTULOS_CAMPOS_OS[chave]) return ROTULOS_CAMPOS_OS[chave];
+            return chave.replace(/_/g, " ").replace(/\b\w/g, function (c) { return c.toUpperCase(); });
+        }
+
+        function listarAlteracoesOs(origem, atual) {
+            const saida = [];
+            const chaves = new Set();
+            [origem || {}, atual || {}].forEach(function (obj) {
+                Object.keys(obj).forEach(function (k) { chaves.add(k); });
+            });
+            chaves.forEach(function (chave) {
+                if (chave === "numero_os" || chave === "senha_confirmacao" || chave === "campos_aplicar") return;
+                if (String(chave).indexOf("assinatura_") === 0) return;
+                const ant = normalizarValorCampoOs(origem ? origem[chave] : "");
+                const novo = normalizarValorCampoOs(atual ? atual[chave] : "");
+                if (ant !== novo) {
+                    saida.push({
+                        chave: chave,
+                        rotulo: rotuloCampoOs(chave),
+                        valorAntigo: ant || "—",
+                        valorNovo: novo || "—",
+                    });
+                }
+            });
+            return saida.sort(function (a, b) { return a.rotulo.localeCompare(b.rotulo, "pt-BR"); });
+        }
+
+        function fecharModalEditarOsFinalizada(resultado) {
+            const backdrop = document.getElementById("os-modal-edit-final-backdrop");
+            const modal = document.getElementById("os-modal-edit-final");
+            const senha = document.getElementById("os-modal-edit-final-senha");
+            if (backdrop) backdrop.classList.add("d-none");
+            if (modal) modal.classList.add("d-none");
+            if (senha) senha.value = "";
+            const resolve = _osModalEditFinalResolve;
+            _osModalEditFinalResolve = null;
+            if (resolve) resolve(resultado);
+        }
+
+        function pedirConfirmacaoEditarOsFinalizada(alteracoes, opcoes) {
+            const opts = opcoes || {};
+            return new Promise(function (resolve) {
+                const backdrop = document.getElementById("os-modal-edit-final-backdrop");
+                const modal = document.getElementById("os-modal-edit-final");
+                const titulo = document.getElementById("os-modal-edit-final-titulo");
+                const texto = document.getElementById("os-modal-edit-final-texto");
+                const lista = document.getElementById("os-modal-edit-final-campos");
+                const senha = document.getElementById("os-modal-edit-final-senha");
+                const btnOk = document.getElementById("os-modal-edit-final-confirmar");
+                const btnCancel = document.getElementById("os-modal-edit-final-cancelar");
+                if (!modal || !lista || !senha || !btnOk || !btnCancel) {
+                    resolve(null);
+                    return;
+                }
+                _osModalEditFinalResolve = resolve;
+                if (titulo) {
+                    titulo.textContent = opts.temporario
+                        ? "Alteração temporária (só PDF)"
+                        : "Gravar alterações na O.S. finalizada";
+                }
+                if (texto) {
+                    texto.textContent = opts.temporario
+                        ? "Marque os campos para aplicar temporariamente nesta sessão (não grava no banco)."
+                        : "Marque os campos que deseja gravar permanentemente e confirme com sua senha.";
+                }
+                lista.innerHTML = alteracoes.map(function (alt, idx) {
+                    return '<div class="form-check mb-1">' +
+                        '<input class="form-check-input" type="checkbox" value="' + escHtml(alt.chave) + '" ' +
+                        'id="os-edit-final-cb-' + idx + '" checked>' +
+                        '<label class="form-check-label small" for="os-edit-final-cb-' + idx + '">' +
+                        '<strong>' + escHtml(alt.rotulo) + "</strong>: " +
+                        escHtml(alt.valorAntigo) + " → " + escHtml(alt.valorNovo) +
+                        "</label></div>";
+                }).join("");
+                senha.value = "";
+                senha.closest(".mb-2").classList.toggle("d-none", !!opts.temporario);
+                if (backdrop) backdrop.classList.remove("d-none");
+                modal.classList.remove("d-none");
+                marcarPresencaOnline();
+
+                function confirmar() {
+                    const campos = [];
+                    lista.querySelectorAll('input[type="checkbox"]:checked').forEach(function (cb) {
+                        campos.push(cb.value);
+                    });
+                    if (!campos.length) {
+                        osToast("Selecione ao menos um campo.", "erro");
+                        return;
+                    }
+                    if (!opts.temporario) {
+                        if (!senha.value) {
+                            senha.focus();
+                            return;
+                        }
+                        fecharModalEditarOsFinalizada({ campos: campos, senha: senha.value });
+                    } else {
+                        fecharModalEditarOsFinalizada({ campos: campos, senha: null });
+                    }
+                }
+
+                btnOk.onclick = confirmar;
+                btnCancel.onclick = function () { fecharModalEditarOsFinalizada(null); };
+                if (backdrop) backdrop.onclick = function () { fecharModalEditarOsFinalizada(null); };
+                senha.onkeydown = function (ev) {
+                    if (ev.key === "Enter") { ev.preventDefault(); confirmar(); }
+                };
+                window.setTimeout(function () {
+                    if (!opts.temporario) senha.focus();
+                }, 80);
+            });
+        }
+
+        function atualizarUiEdicaoOsFinalizada() {
+            const btnTemp = document.getElementById("btn-os-temp-finalizada");
+            const num = numeroOsEmEdicao();
+            const mostrarTemp = !!num && osEstaFinalizada(osStatusAtual) &&
+                podeEditarOsFinalizada() && osEdicaoTemporariaHabilitada();
+            if (btnTemp) btnTemp.classList.toggle("d-none", !mostrarTemp);
+        }
+
+        function formularioOsEditavel() {
+            const gran = usarPermissoesGranulares();
+            let base;
+            if (gran) {
+                base = numeroOsEmEdicao()
+                    ? osTemPermissao("ordem_os_geral_editar")
+                    : osTemPermissao("ordem_os_geral_criar");
+            } else {
+                base = mecanicoFormularioCompletoModulo() || PERMISSOES_OS.perfil === "admin";
+            }
+            if (!base && PERMISSOES_OS.perfil !== "admin") return false;
+            if (numeroOsEmEdicao() && osEstaFinalizada(osStatusAtual)) {
+                return podeEditarOsFinalizada();
+            }
+            return true;
+        }
+
+        function mesclarOverridesTemporariosOs(dados) {
+            const saida = Object.assign({}, dados || {});
+            Object.keys(osOverridesTemporarios).forEach(function (chave) {
+                saida[chave] = osOverridesTemporarios[chave];
+            });
+            return saida;
+        }
+
+        function limparEstadoEdicaoOsFinalizada() {
+            osStatusAtual = "";
+            osDadosOriginaisSnapshot = null;
+            osOverridesTemporarios = {};
+            atualizarUiEdicaoOsFinalizada();
+        }
 
         let _popoverSenhaResolve = null;
         let _modaisBootstrapSuspensos = [];
@@ -6738,7 +6974,15 @@
             }
             return temId ? reqOsPodeEditar() : reqOsPodeCriar();
         }
+        function pendenciasIntegracaoPodeVer() {
+            if (PERMISSOES_OS.eh_admin) return true;
+            return PERMISSOES_OS.pode_atribuir_mecanico || listaPodeAtribuirMecanico()
+                || reqOsPodeResponder();
+        }
         function reqPodeVerAbaLista(aba) {
+            if (aba === "pendencias") {
+                return pendenciasIntegracaoPodeVer();
+            }
             if (aba === "internas") {
                 return reqInternaPodeVisualizar();
             }
@@ -6827,6 +7071,183 @@
                 }) || null;
             }
             atualizarBotoesReqEditor(reqAtual);
+            atualizarLayoutAbaRequisicoes();
+        }
+
+        function atualizarBadgePendenciasIntegracao(total) {
+            const n = typeof total === "number" ? total : 0;
+            ["badge-req-pendencias-integracao", "badge-req-aba-pendencias"].forEach(function (id) {
+                const el = document.getElementById(id);
+                if (!el) return;
+                el.textContent = String(n);
+                el.classList.toggle("d-none", n <= 0);
+            });
+        }
+
+        function atualizarLayoutAbaRequisicoes() {
+            const ehPend = reqListaAbaAtiva === "pendencias";
+            const colEditor = document.querySelector("#pane-mod-requisicao .col-lg-7");
+            const colLista = document.getElementById("req-col-lista");
+            const toolbar = document.getElementById("req-pendencias-toolbar");
+            if (colEditor) colEditor.classList.toggle("d-none", ehPend);
+            if (toolbar) toolbar.classList.toggle("d-none", !ehPend);
+            if (colLista) {
+                colLista.classList.toggle("col-lg-12", ehPend);
+                colLista.classList.toggle("col-lg-5", !ehPend);
+            }
+        }
+
+        async function buscarPendenciasIntegracaoOs() {
+            const resp = await fetch("/api/os/pendencias-integracao", FETCH_OPTS);
+            let data = {};
+            try {
+                data = await resp.json();
+            } catch (parseErr) {
+                throw new Error("Resposta inválida do servidor (" + resp.status + ").");
+            }
+            if (!resp.ok || !data.sucesso) {
+                throw new Error(data.mensagem || "Não foi possível carregar pendências.");
+            }
+            return data;
+        }
+
+        async function atualizarBadgePendenciasIntegracaoRemoto() {
+            if (!pendenciasIntegracaoPodeVer()) {
+                atualizarBadgePendenciasIntegracao(0);
+                return;
+            }
+            try {
+                const data = await buscarPendenciasIntegracaoOs();
+                atualizarBadgePendenciasIntegracao((data.itens || []).length);
+            } catch (err) {
+                console.error("badge pendencias integracao:", err);
+            }
+        }
+
+        function rotuloAcaoPendencia(chave) {
+            const mapa = {
+                vincular_os: "Vincular NOTA à O.S.",
+                sincronizar_status: "Sincronizar status com Controle de O.S.",
+                encerrar_requisicao: "Encerrar requisição (já atendida na Oficina)",
+            };
+            return mapa[chave] || chave;
+        }
+
+        function renderizarListaPendenciasIntegracao(itens) {
+            const painel = document.getElementById("lista-requisicoes-painel");
+            if (!painel) return;
+            window._cachePendenciasIntegracao = itens || [];
+            atualizarBadgePendenciasIntegracao((itens || []).length);
+            if (!itens || !itens.length) {
+                painel.innerHTML = '<p class="text-muted small">Nenhuma pendência de integração no momento.</p>';
+                return;
+            }
+            painel.innerHTML = "";
+            itens.forEach(function (p, idx) {
+                const sugeridas = p.acoes_sugeridas || {};
+                const acoesHtml = Object.keys(sugeridas).filter(function (k) {
+                    return !!sugeridas[k];
+                }).map(function (k) {
+                    return '<label class="form-check small mb-1">' +
+                        '<input type="checkbox" class="form-check-input req-pend-acao" ' +
+                        'data-idx="' + idx + '" data-acao="' + escHtml(k) + '" checked> ' +
+                        escHtml(rotuloAcaoPendencia(k)) + "</label>";
+                }).join("");
+                const div = document.createElement("div");
+                div.className = "mb-2 p-2 rounded border border-warning border-opacity-50";
+                div.innerHTML =
+                    '<div class="form-check mb-2">' +
+                    '<input type="checkbox" class="form-check-input req-pend-item" data-idx="' + idx + '" checked>' +
+                    '<label class="form-check-label fw-semibold">O.S. ' + escHtml(p.numero_os) +
+                    " · " + escHtml(p.rotulo_tipo || p.tipo || "") + "</label></div>" +
+                    '<div class="small text-muted mb-1">' + escHtml(p.cliente_nome || "") +
+                    (p.mecanico_nome ? " · " + escHtml(p.mecanico_nome) : "") + "</div>" +
+                    '<div class="small mb-2">' + escHtml(p.detalhe || "") + "</div>" +
+                    (acoesHtml ? '<div class="ms-3 border-start border-secondary border-opacity-25 ps-2">' +
+                        acoesHtml + "</div>" : "");
+                painel.appendChild(div);
+            });
+            painel.querySelectorAll(".req-pend-item").forEach(function (chk) {
+                chk.addEventListener("change", function () {
+                    const idx = chk.getAttribute("data-idx");
+                    painel.querySelectorAll('.req-pend-acao[data-idx="' + idx + '"]').forEach(function (a) {
+                        a.disabled = !chk.checked;
+                    });
+                });
+            });
+        }
+
+        async function carregarPendenciasIntegracaoPainel() {
+            const painel = document.getElementById("lista-requisicoes-painel");
+            if (!painel) return;
+            if (!pendenciasIntegracaoPodeVer()) {
+                painel.innerHTML = '<p class="text-muted small">Sem permissão para conferir pendências.</p>';
+                return;
+            }
+            painel.innerHTML = '<p class="text-muted small">Carregando pendências...</p>';
+            try {
+                const data = await buscarPendenciasIntegracaoOs();
+                renderizarListaPendenciasIntegracao(data.itens || []);
+            } catch (err) {
+                painel.innerHTML = '<p class="text-danger small">' +
+                    escHtml(err.message || "Erro ao carregar.") + "</p>";
+            }
+        }
+
+        async function resolverPendenciasIntegracaoSelecionadas() {
+            const painel = document.getElementById("lista-requisicoes-painel");
+            if (!painel || !pendenciasIntegracaoPodeVer()) return;
+            const cache = window._cachePendenciasIntegracao || [];
+            const itens = [];
+            painel.querySelectorAll(".req-pend-item:checked").forEach(function (chk) {
+                const idx = parseInt(chk.getAttribute("data-idx"), 10);
+                const p = cache[idx];
+                if (!p) return;
+                const acoes = {};
+                painel.querySelectorAll('.req-pend-acao[data-idx="' + idx + '"]:checked').forEach(function (a) {
+                    acoes[a.getAttribute("data-acao")] = true;
+                });
+                if (!Object.keys(acoes).length) return;
+                itens.push({
+                    chave: p.chave,
+                    numero_os: p.numero_os,
+                    servico_id: p.servico_id,
+                    requisicao_id: p.requisicao_id,
+                    acoes: acoes,
+                });
+            });
+            if (!itens.length) {
+                osToast("Marque ao menos uma pendência e uma ação para resolver.", "info");
+                return;
+            }
+            const btn = document.getElementById("btn-req-resolver-pendencias");
+            if (btn) btn.disabled = true;
+            try {
+                const resp = await fetch("/api/os/pendencias-integracao/resolver", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    credentials: "same-origin",
+                    body: JSON.stringify({ itens: itens }),
+                });
+                const data = await resp.json();
+                if (!resp.ok || !data.sucesso) {
+                    osToast(data.mensagem || "Não foi possível resolver.", "erro");
+                    return;
+                }
+                const msgs = (data.resultados || []).flatMap(function (r) {
+                    return r.mensagens || [];
+                });
+                osToast(data.mensagem || "Pendências processadas.", "ok");
+                if (msgs.length) console.info("pendencias:", msgs.join(" | "));
+                await carregarPendenciasIntegracaoPainel();
+                await atualizarBadgePendenciasIntegracaoRemoto();
+                carregarNotificacoes();
+                carregarPerfisSidebar();
+            } catch (err) {
+                osToast(err.message || "Erro ao resolver pendências.", "erro");
+            } finally {
+                if (btn) btn.disabled = false;
+            }
         }
 
         let estPermissoesCache = {};
@@ -7394,6 +7815,9 @@
         const alertaOsSalvaTexto = document.getElementById("alerta-os-salva-texto");
         const badgeNumeroOs = document.getElementById("badge-numero-os");
         const formOs = document.getElementById("form-os");
+        if (window.MascarasDocumento && typeof MascarasDocumento.vincularMascarasFormularioOs === "function") {
+            MascarasDocumento.vincularMascarasFormularioOs();
+        }
         const btnSalvarOs = document.getElementById("btn-salvar-os");
         const btnGerarPdf = document.getElementById("btn-gerar-pdf");
 
@@ -7509,6 +7933,7 @@
                 const el = document.getElementById(campoId);
                 if (el) el.value = cliente[chaveJson] || "";
             });
+            if (window.MascarasDocumento) MascarasDocumento.aplicarMascarasCamposOs();
 
             const cpf = (cliente.cpf_cnpj || "").replace(/\D/g, "");
             const pf = document.getElementById("pessoa_fisica");
@@ -10968,13 +11393,16 @@
                 numeroOs + '">' +
                 '<div class="small fw-semibold mb-2"><i class="bi bi-camera me-1"></i> Fotos — O.S. ' +
                 numeroOs + "</div>" +
-                '<p class="small text-muted mb-2">Tire ou escolha as fotos e envie ao responsável.' +
+                '<p class="small text-muted mb-2">Tire fotos ou escolha da galeria e envie ao responsável.' +
                 '<span class="perfil-fotos-limite-linha d-none"> Máx. <span class="perfil-fotos-limite-qtd">20</span> fotos, ' +
                 '~<span class="perfil-fotos-limite-kb">450</span> KB cada.</span></p>' +
-                '<input type="file" class="d-none perfil-fotos-input" accept="image/*" capture="environment" multiple>' +
+                '<input type="file" class="d-none perfil-fotos-input-camera" accept="image/*" capture="environment">' +
+                '<input type="file" class="d-none perfil-fotos-input-galeria" accept="image/*" multiple>' +
                 '<div class="d-flex flex-wrap gap-2 mb-2">' +
                 '<button type="button" class="btn btn-sm btn-outline-light btn-perfil-fotos-capturar">' +
-                '<i class="bi bi-camera-fill"></i> Tirar / escolher fotos</button>' +
+                '<i class="bi bi-camera-fill"></i> Tirar foto</button>' +
+                '<button type="button" class="btn btn-sm btn-outline-light btn-perfil-fotos-galeria">' +
+                '<i class="bi bi-images"></i> Galeria</button>' +
                 '<button type="button" class="btn btn-sm btn-primary btn-perfil-fotos-enviar" disabled>' +
                 '<i class="bi bi-send"></i> Enviar fotos</button></div>' +
                 '<div class="perfil-fotos-preview d-flex flex-wrap gap-2 mb-2"></div>' +
@@ -10985,9 +11413,11 @@
         function vincularPainelFotosPerfil(item, numeroOs) {
             const painel = item.querySelector(".perfil-fotos-painel");
             if (!painel || !podeEnviarFotosOsPerfil()) return;
-            const input = painel.querySelector(".perfil-fotos-input");
+            const inputCamera = painel.querySelector(".perfil-fotos-input-camera");
+            const inputGaleria = painel.querySelector(".perfil-fotos-input-galeria");
             const preview = painel.querySelector(".perfil-fotos-preview");
             const btnCapt = painel.querySelector(".btn-perfil-fotos-capturar");
+            const btnGal = painel.querySelector(".btn-perfil-fotos-galeria");
             const btnEnv = painel.querySelector(".btn-perfil-fotos-enviar");
             const fotosLocais = [];
             const lim = limitesFotosOsEnvio();
@@ -11002,10 +11432,12 @@
                 fotosLocais.forEach(function (src, idx) {
                     const wrap = document.createElement("div");
                     wrap.className = "position-relative";
+                    wrap.style.cssText = "width:72px;height:72px;flex:0 0 auto;";
                     wrap.innerHTML =
                         '<img src="' + src + '" alt="Foto ' + (idx + 1) +
                         '" class="rounded border" style="width:72px;height:72px;object-fit:cover;">' +
-                        '<button type="button" class="btn btn-sm btn-danger position-absolute top-0 end-0 p-0 px-1" ' +
+                        '<button type="button" class="btn btn-danger position-absolute p-0" ' +
+                        'style="top:-6px;right:-6px;z-index:5;width:22px;height:22px;line-height:1;font-size:14px;" ' +
                         'data-idx="' + idx + '" title="Remover">&times;</button>';
                     preview.appendChild(wrap);
                 });
@@ -11020,34 +11452,45 @@
                 if (btnEnv) btnEnv.disabled = !fotosLocais.length;
             }
 
-            if (btnCapt && input) {
-                btnCapt.addEventListener("click", function () { input.click(); });
-                input.addEventListener("change", function () {
-                    const files = input.files ? Array.from(input.files) : [];
-                    if (!files.length) return;
-                    if (fotosLocais.length + files.length > limiteQtd) {
-                        osToast("Máximo de " + limiteQtd + " fotos por envio.", "aviso");
-                        input.value = "";
-                        return;
-                    }
-                    let pendentes = files.length;
-                    files.forEach(function (arq) {
-                        const reader = new FileReader();
-                        reader.onload = function () {
-                            const resultado = String(reader.result || "");
-                            if (resultado.length > limiteBytes) {
-                                osToast("Uma foto passou de ~" + limiteKb + " KB. Use imagem menor.", "aviso");
-                            } else if (resultado) {
-                                fotosLocais.push(resultado);
-                            }
-                            pendentes -= 1;
-                            if (pendentes <= 0) {
-                                renderPreview();
-                                input.value = "";
-                            }
-                        };
-                        reader.readAsDataURL(arq);
-                    });
+            function processarArquivosFotos(files, inputEl) {
+                if (!files.length) return;
+                if (fotosLocais.length + files.length > limiteQtd) {
+                    osToast("Máximo de " + limiteQtd + " fotos por envio.", "aviso");
+                    if (inputEl) inputEl.value = "";
+                    return;
+                }
+                let pendentes = files.length;
+                files.forEach(function (arq) {
+                    const reader = new FileReader();
+                    reader.onload = function () {
+                        const resultado = String(reader.result || "");
+                        if (resultado.length > limiteBytes) {
+                            osToast("Uma foto passou de ~" + limiteKb + " KB. Use imagem menor.", "aviso");
+                        } else if (resultado) {
+                            fotosLocais.push(resultado);
+                        }
+                        pendentes -= 1;
+                        if (pendentes <= 0) {
+                            renderPreview();
+                            if (inputEl) inputEl.value = "";
+                        }
+                    };
+                    reader.readAsDataURL(arq);
+                });
+            }
+
+            if (btnCapt && inputCamera) {
+                btnCapt.addEventListener("click", function () { inputCamera.click(); });
+                inputCamera.addEventListener("change", function () {
+                    const files = inputCamera.files ? Array.from(inputCamera.files) : [];
+                    processarArquivosFotos(files, inputCamera);
+                });
+            }
+            if (btnGal && inputGaleria) {
+                btnGal.addEventListener("click", function () { inputGaleria.click(); });
+                inputGaleria.addEventListener("change", function () {
+                    const files = inputGaleria.files ? Array.from(inputGaleria.files) : [];
+                    processarArquivosFotos(files, inputGaleria);
                 });
             }
             if (btnEnv) {
@@ -11199,25 +11642,70 @@
 
         async function carregarMiniaturasFotosOs(numeroOs, alvo) {
             if (!alvo) return;
+            const podeRemover = fotosPodeVisualizar();
             try {
                 const resp = await fetch("/api/os/" + encodeURIComponent(numeroOs) + "/fotos/pendentes", FETCH_OPTS);
                 const data = await resp.json();
                 if (!resp.ok || !data.sucesso) return;
-                (data.fotos || []).slice(0, 8).forEach(function (f, idx) {
+                alvo.innerHTML = "";
+                const fotos = data.fotos || [];
+                if (!fotos.length) {
+                    alvo.innerHTML = '<span class="small text-muted">Sem fotos pendentes.</span>';
+                    return;
+                }
+                fotos.forEach(function (f, idx) {
+                    const wrap = document.createElement("div");
+                    wrap.className = "position-relative";
+                    wrap.style.cssText = "width:64px;height:64px;flex:0 0 auto;";
                     const img = document.createElement("img");
                     img.src = f.foto;
                     img.alt = "Foto " + (idx + 1);
                     img.className = "rounded border";
                     img.style.cssText = "width:64px;height:64px;object-fit:cover;";
-                    alvo.appendChild(img);
+                    wrap.appendChild(img);
+                    if (podeRemover && f.id) {
+                        const btn = document.createElement("button");
+                        btn.type = "button";
+                        btn.className = "btn btn-danger position-absolute p-0";
+                        btn.style.cssText =
+                            "top:-6px;right:-6px;z-index:5;width:22px;height:22px;line-height:1;font-size:14px;";
+                        btn.title = "Remover foto";
+                        btn.innerHTML = "&times;";
+                        btn.addEventListener("click", function () {
+                            excluirFotoOsPendente(numeroOs, f.id, wrap, alvo);
+                        });
+                        wrap.appendChild(btn);
+                    }
+                    alvo.appendChild(wrap);
                 });
-                if ((data.fotos || []).length > 8) {
-                    const mais = document.createElement("span");
-                    mais.className = "small text-muted align-self-center";
-                    mais.textContent = "+" + ((data.fotos || []).length - 8);
-                    alvo.appendChild(mais);
-                }
             } catch (e) { /* ignora */ }
+        }
+
+        async function excluirFotoOsPendente(numeroOs, fotoId, wrapEl, alvoMiniaturas) {
+            const ok = await osConfirm("Remover esta foto da fila de envio?");
+            if (!ok) return;
+            try {
+                const resp = await fetch(
+                    "/api/os/" + encodeURIComponent(numeroOs) + "/fotos/" + encodeURIComponent(fotoId),
+                    { method: "DELETE", credentials: "same-origin" }
+                );
+                const data = await resp.json();
+                if (!resp.ok || !data.sucesso) {
+                    osToast(data.mensagem || "Não foi possível remover a foto.", "erro");
+                    return;
+                }
+                osToast(data.mensagem || "Foto removida.", "ok");
+                atualizarBadgeFotosOsPendentes(data.total_os_pendentes);
+                if (data.total_fotos_os > 0) {
+                    if (wrapEl && wrapEl.parentNode) wrapEl.remove();
+                } else {
+                    const card = alvoMiniaturas ? alvoMiniaturas.closest(".fotos-os-card") : null;
+                    if (card && card.parentNode) card.remove();
+                    else carregarFotosOsPendentes();
+                }
+            } catch (err) {
+                osToast("Erro ao remover foto.", "erro");
+            }
         }
 
         async function marcarFotosOsEnviadas(numeroOs) {
@@ -11332,11 +11820,7 @@
             const podeCriar = gran
                 ? osTemPermissao("ordem_os_geral_criar")
                 : (!mecanicoLegado || !!PERMISSOES_OS.pode_criar_os);
-            const formularioCompleto = gran
-                ? (numeroOsEmEdicao()
-                    ? osTemPermissao("ordem_os_geral_editar")
-                    : osTemPermissao("ordem_os_geral_criar"))
-                : mecanicoFormularioCompletoModulo();
+            const formularioCompleto = formularioOsEditavel();
             const navOrdem = document.getElementById("nav-mod-ordem");
             const btnNova = document.getElementById("btn-nova-os");
             const blocoMec = document.getElementById("bloco-mecanico-atribuido");
@@ -11364,8 +11848,10 @@
                 btnPdf.classList.toggle("d-none", !osTemPermissao("ordem_os_geral_gerar_pdf"));
             }
             if (blocoPdfOri) {
-                blocoPdfOri.classList.toggle("d-none", !osTemPermissao("ordem_os_geral_gerar_pdf"));
+                const mostrarOri = PERMISSOES_OS.perfil === "admin" || cfgPodeAlterarPdfOri;
+                blocoPdfOri.classList.toggle("d-none", !mostrarOri);
             }
+            atualizarUiEdicaoOsFinalizada();
             if (blocoMec) blocoMec.classList.toggle("d-none", !PERMISSOES_OS.pode_atribuir_mecanico);
             if (blocoResumoMec) blocoResumoMec.classList.add("d-none");
             if (blocoAlegacoes) blocoAlegacoes.classList.remove("d-none");
@@ -12544,6 +13030,7 @@
             definirMecanicoOsAtual(null, "");
             osCargaRestrita = false;
             agAgendamentoPendenteOs = null;
+            limparEstadoEdicaoOsFinalizada();
             return true;
         }
 
@@ -12621,6 +13108,7 @@
                 aplicarValorCampo(el, dados);
             });
             aplicarRadiosECheckboxes(dados);
+            if (window.MascarasDocumento) MascarasDocumento.aplicarMascarasCamposOs();
             if (dados.numero_os) {
                 document.getElementById("numero_os").value = String(dados.numero_os);
             }
@@ -12658,6 +13146,9 @@
                 await carregarMecanicosSelect(data.mecanico_id);
                 definirMecanicoOsAtual(data.mecanico_id, data.mecanico_nome);
                 await aplicarDadosNoFormulario(dados);
+                osStatusAtual = data.status || "";
+                osDadosOriginaisSnapshot = JSON.parse(JSON.stringify(dados));
+                osOverridesTemporarios = {};
                 osCargaRestrita = cargaRestrita;
                 const clienteId = data.cliente_id || dados.cliente_id;
                 if (clienteId) {
@@ -12692,6 +13183,7 @@
                         if (at) at.value = String(atendenteSalvo);
                     }
                 }
+                if (window.MascarasDocumento) MascarasDocumento.aplicarMascarasCamposOs();
                 if (osCargaRestrita) {
                     definirAlertaOs(
                         '<i class="bi bi-eye me-1"></i> O.S. nº ' + data.numero_os + " — visualização resumida",
@@ -12704,6 +13196,7 @@
                     );
                 }
                 aplicarPermissoesOsUi();
+                atualizarUiEdicaoOsFinalizada();
                 navIrOrdemSeConfig("abrir_os_edicao_ordem");
                 const reqOsEl = document.getElementById("req-editor-os");
                 if (reqOsEl) reqOsEl.value = String(data.numero_os);
@@ -12727,9 +13220,13 @@
             );
             const linkBox = document.getElementById("link-pdf-salvo");
             const linkHref = document.getElementById("link-pdf-salvo-href");
-            if (linkBox && linkHref && pdfUrl) {
-                linkHref.href = pdfUrl;
-                linkBox.classList.remove("d-none");
+            if (linkBox && linkHref) {
+                if (pdfUrl) {
+                    linkHref.href = pdfUrl;
+                    linkBox.classList.remove("d-none");
+                } else {
+                    linkBox.classList.add("d-none");
+                }
             }
             carregarListaOs();
         }
@@ -12864,6 +13361,7 @@
         const blocoTipoOs = document.getElementById("bloco-tipo-os");
         const cfgExibirTipoOs = document.getElementById("cfg-exibir-tipo-os");
         const cfgMecanicoModuloOsPadrao = document.getElementById("cfg-mecanico-modulo-os-padrao");
+        const cfgOsEdicaoTemporaria = document.getElementById("cfg-os-edicao-temporaria");
         const cfgInternaPublicarOficina = document.getElementById("cfg-interna-publicar-oficina");
         const cfgTelespectadorAdmin = document.getElementById("cfg-telespectador-admin");
         const cfgTelespectadorOperadores = document.getElementById("cfg-telespectador-operadores");
@@ -13016,7 +13514,7 @@
             const lbl = document.getElementById("pdf-orientacao-salva-label");
             if (lbl) {
                 lbl.textContent = v === "vertical" ? "Vertical" : "Horizontal";
-                lbl.classList.remove("d-none");
+                lbl.classList.add("d-none");
             }
         }
 
@@ -13842,6 +14340,10 @@
                 if (cfgMecanicoModuloOsPadrao) {
                     cfgMecanicoModuloOsPadrao.checked = data.mecanico_modulo_os_padrao !== false;
                 }
+                if (cfgOsEdicaoTemporaria) {
+                    cfgOsEdicaoTemporaria.checked = !!data.os_edicao_temporaria_habilitada;
+                }
+                PERMISSOES_OS.os_edicao_temporaria_habilitada = !!data.os_edicao_temporaria_habilitada;
                 if (cfgInternaPublicarOficina) {
                     cfgInternaPublicarOficina.checked = !!data.interna_publicar_oficina;
                 }
@@ -14230,6 +14732,13 @@
                 if ("mecanico_modulo_os_padrao" in campos && cfgMecanicoModuloOsPadrao) {
                     cfgMecanicoModuloOsPadrao.checked = data.mecanico_modulo_os_padrao !== false;
                 }
+                if ("os_edicao_temporaria_habilitada" in campos) {
+                    PERMISSOES_OS.os_edicao_temporaria_habilitada = !!data.os_edicao_temporaria_habilitada;
+                    if (cfgOsEdicaoTemporaria) {
+                        cfgOsEdicaoTemporaria.checked = PERMISSOES_OS.os_edicao_temporaria_habilitada;
+                    }
+                    atualizarUiEdicaoOsFinalizada();
+                }
                 if ("interna_publicar_oficina" in campos) {
                     window._cfgInternaPublicarOficina = !!data.interna_publicar_oficina;
                     if (cfgInternaPublicarOficina) {
@@ -14275,6 +14784,19 @@
             cfgMecanicoModuloOsPadrao.addEventListener("change", function () {
                 if (!cfgPodeConfigurarApp) return;
                 salvarConfigApp({ mecanico_modulo_os_padrao: cfgMecanicoModuloOsPadrao.checked }, cfgFeedback);
+            });
+        }
+
+        if (cfgOsEdicaoTemporaria) {
+            cfgOsEdicaoTemporaria.addEventListener("change", function () {
+                if (!cfgPodeConfigurarApp) return;
+                salvarConfigApp(
+                    { os_edicao_temporaria_habilitada: cfgOsEdicaoTemporaria.checked },
+                    cfgFeedback
+                ).then(function () {
+                    PERMISSOES_OS.os_edicao_temporaria_habilitada = cfgOsEdicaoTemporaria.checked;
+                    atualizarUiEdicaoOsFinalizada();
+                });
             });
         }
 
@@ -17351,6 +17873,11 @@
         async function carregarRequisicoesPainel() {
             const painel = document.getElementById("lista-requisicoes-painel");
             if (!painel) return;
+            atualizarLayoutAbaRequisicoes();
+            if (reqListaAbaAtiva === "pendencias") {
+                await carregarPendenciasIntegracaoPainel();
+                return;
+            }
             if (!garantirAbaRequisicoesAtiva()) {
                 painel.innerHTML = '<p class="text-muted small">Sem permissão para visualizar requisições.</p>';
                 return;
@@ -17390,6 +17917,7 @@
                 const ativo = btn.getAttribute("data-req-aba") === reqListaAbaAtiva;
                 btn.classList.toggle("active", ativo);
             });
+            atualizarLayoutAbaRequisicoes();
             await carregarRequisicoesPainel();
         }
 
@@ -18907,7 +19435,17 @@
         }
 
         const btnAtualizarRequisicoes = document.getElementById("btn-atualizar-requisicoes");
-        if (btnAtualizarRequisicoes) btnAtualizarRequisicoes.addEventListener("click", carregarRequisicoesPainel);
+        if (btnAtualizarRequisicoes) {
+            btnAtualizarRequisicoes.addEventListener("click", function () {
+                carregarRequisicoesPainel();
+                if (pendenciasIntegracaoPodeVer()) atualizarBadgePendenciasIntegracaoRemoto();
+            });
+        }
+
+        const btnResolverPendencias = document.getElementById("btn-req-resolver-pendencias");
+        if (btnResolverPendencias) {
+            btnResolverPendencias.addEventListener("click", resolverPendenciasIntegracaoSelecionadas);
+        }
 
         if (btnFinalizarServico) {
             btnFinalizarServico.addEventListener("click", async function () {
@@ -18943,6 +19481,10 @@
         setInterval(function () {
             if (fotosPodeVisualizar()) atualizarBadgeFotosOsPendentes();
         }, 45000);
+        setInterval(function () {
+            if (pendenciasIntegracaoPodeVer()) atualizarBadgePendenciasIntegracaoRemoto();
+        }, 60000);
+        if (pendenciasIntegracaoPodeVer()) atualizarBadgePendenciasIntegracaoRemoto();
 
         /* ---------- Salvar O.S. (API /salvar_os) ---------- */
 
@@ -18991,11 +19533,14 @@
 
         inicializarRadiosDesmarcaveis();
 
-        function coletarDadosFormulario() {
+        function coletarDadosFormulario(opcoes) {
+            const opts = opcoes || {};
             capturarAssinaturasParaEnvio();
             const horasMec = document.getElementById("horas_uso_mecanico");
             const horasOrig = document.getElementById("horas_uso");
-            if (horasMec && horasOrig) horasOrig.value = horasMec.value;
+            if (horasMec && horasOrig && !horasMec.classList.contains("d-none")) {
+                horasOrig.value = horasMec.value;
+            }
             const dados = {};
             const elementos = formOs.querySelectorAll("input, select, textarea");
 
@@ -19043,6 +19588,9 @@
                 });
             }
 
+            if (opts.incluirOverridesTemp) {
+                return mesclarOverridesTemporariosOs(dados);
+            }
             return dados;
         }
 
@@ -19053,12 +19601,30 @@
                 osToast("Visualização resumida. Você não tem permissão para editar esta O.S. no módulo.", 'erro');
                 return;
             }
+            const numEdicaoPre = numeroOsEmEdicao();
+            if (!modoSilencioso && numEdicaoPre && osEstaFinalizada(osStatusAtual) && !podeEditarOsFinalizada()) {
+                osToast("Esta O.S. está finalizada. Você não tem permissão para alterá-la.", "erro");
+                return;
+            }
             if (!modoSilencioso && PERMISSOES_OS.perfil === "mecanico" &&
                 !numeroOsEmEdicao() && !PERMISSOES_OS.pode_criar_os) {
                 osToast("Você não tem permissão para criar novas O.S.", 'erro');
                 return;
             }
             const dados = coletarDadosFormulario();
+            const numEdicao = numeroOsEmEdicao();
+
+            if (!modoSilencioso && numEdicao && osEstaFinalizada(osStatusAtual) && podeEditarOsFinalizada()) {
+                const alteracoes = listarAlteracoesOs(osDadosOriginaisSnapshot, dados);
+                if (!alteracoes.length) {
+                    osToast("Nenhum campo foi alterado.", "info");
+                    return;
+                }
+                const confirmacao = await pedirConfirmacaoEditarOsFinalizada(alteracoes, { temporario: false });
+                if (!confirmacao) return;
+                dados.senha_confirmacao = confirmacao.senha;
+                dados.campos_aplicar = confirmacao.campos;
+            }
 
             if (PERMISSOES_OS.perfil !== "mecanico" && !dados.cliente_nome && !dados.busca_cliente) {
                 if (!modoSilencioso) {
@@ -19103,6 +19669,10 @@
                     }
                 } else {
                     destacarOsSalva(resultado.numero_os, resultado.mensagem, resultado.pdf_url);
+                    if (numEdicao && osEstaFinalizada(osStatusAtual)) {
+                        osDadosOriginaisSnapshot = coletarDadosFormulario();
+                        osOverridesTemporarios = {};
+                    }
                 }
                 carregarPerfisSidebar();
                 if (agAgendamentoPendenteOs) {
@@ -19115,7 +19685,8 @@
                 if (!modoSilencioso && PERMISSOES_OS.pode_atribuir_mecanico && navModLista) {
                     carregarListaOs();
                 }
-                if (!modoSilencioso && resultado.pdf_url && PERMISSOES_OS.perfil !== "mecanico") {
+                if (!modoSilencioso && resultado.pdf_url && !resultado.atualizada &&
+                    PERMISSOES_OS.perfil !== "mecanico") {
                     window.open(resultado.pdf_url, "_blank");
                 }
             } catch (err) {
@@ -19133,7 +19704,7 @@
         async function gerarPdfAtual() {
             if (!btnGerarPdf) return;
             capturarAssinaturasParaEnvio();
-            const dados = coletarDadosFormulario();
+            const dados = coletarDadosFormulario({ incluirOverridesTemp: true });
             btnGerarPdf.disabled = true;
             const txt = btnGerarPdf.innerHTML;
             btnGerarPdf.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
@@ -19162,6 +19733,27 @@
 
         if (btnSalvarOs) {
             btnSalvarOs.addEventListener("click", function () { salvarOrdemServico(false); });
+        }
+        const btnOsTempFinalizada = document.getElementById("btn-os-temp-finalizada");
+        if (btnOsTempFinalizada) {
+            btnOsTempFinalizada.addEventListener("click", async function () {
+                if (!numeroOsEmEdicao() || !osEstaFinalizada(osStatusAtual) || !podeEditarOsFinalizada()) return;
+                const dados = coletarDadosFormulario();
+                const alteracoes = listarAlteracoesOs(osDadosOriginaisSnapshot, dados);
+                if (!alteracoes.length) {
+                    osToast("Nenhum campo foi alterado.", "info");
+                    return;
+                }
+                const confirmacao = await pedirConfirmacaoEditarOsFinalizada(alteracoes, { temporario: true });
+                if (!confirmacao) return;
+                confirmacao.campos.forEach(function (campo) {
+                    osOverridesTemporarios[campo] = dados[campo];
+                });
+                osToast(
+                    "Alterações temporárias aplicadas. Válidas nesta O.S. até trocar (refletem no PDF).",
+                    "ok"
+                );
+            });
         }
         if (btnGerarPdf) btnGerarPdf.addEventListener("click", gerarPdfAtual);
 
@@ -21410,6 +22002,25 @@
         <div class="os-modal-app-botoes mt-3">
             <button type="button" class="btn btn-sm btn-outline-secondary" id="modal-pre-req-cancelar">Cancelar</button>
             <button type="button" class="btn btn-sm btn-os-primary" id="modal-pre-req-confirmar">Continuar</button>
+        </div>
+    </div>
+</div>
+
+<div id="os-modal-edit-final-backdrop" class="os-modal-app-backdrop d-none" aria-hidden="true"></div>
+<div id="os-modal-edit-final" class="os-modal-app d-none" role="dialog" aria-modal="true"
+     aria-labelledby="os-modal-edit-final-titulo" style="max-width: 520px;">
+    <div class="os-modal-app-inner">
+        <div id="os-modal-edit-final-titulo" class="os-modal-app-titulo">Atualizar O.S. finalizada</div>
+        <p id="os-modal-edit-final-texto" class="os-modal-app-texto mb-2 small text-muted">
+            Marque os campos que deseja alterar e confirme com sua senha.
+        </p>
+        <div id="os-modal-edit-final-campos" class="mb-2" style="max-height: 220px; overflow-y: auto;"></div>
+        <label for="os-modal-edit-final-senha" class="form-label small mb-1">Sua senha</label>
+        <input type="password" class="form-control form-control-sm mb-2" id="os-modal-edit-final-senha"
+               autocomplete="current-password" placeholder="Digite sua senha">
+        <div class="os-modal-app-botoes mt-2">
+            <button type="button" class="btn btn-sm btn-outline-secondary" id="os-modal-edit-final-cancelar">Cancelar</button>
+            <button type="button" class="btn btn-sm btn-os-primary" id="os-modal-edit-final-confirmar">Confirmar</button>
         </div>
     </div>
 </div>

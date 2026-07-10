@@ -228,6 +228,53 @@ def obter_fotos_pendentes_os(
     return base
 
 
+def excluir_foto_os_item(
+    conn: sqlite3.Connection,
+    *,
+    numero_os: int,
+    foto_id: int,
+) -> dict[str, Any]:
+    init_os_fotos_tabelas(conn)
+    row = conn.execute(
+        """
+        SELECT i.id, i.envio_id, e.numero_os, e.pendente_responsavel
+        FROM os_fotos_item i
+        JOIN os_fotos_envio e ON e.id = i.envio_id
+        WHERE i.id = ?
+        """,
+        (int(foto_id),),
+    ).fetchone()
+    if row is None:
+        raise ValueError("Foto não encontrada.")
+    if int(row["numero_os"]) != int(numero_os):
+        raise ValueError("Foto não pertence a esta O.S.")
+    if not int(row["pendente_responsavel"]):
+        raise ValueError("Esta foto já foi marcada como enviada ao cliente.")
+    envio_id = int(row["envio_id"])
+    conn.execute("DELETE FROM os_fotos_item WHERE id = ?", (int(foto_id),))
+    restantes = conn.execute(
+        "SELECT COUNT(*) AS n FROM os_fotos_item WHERE envio_id = ?",
+        (envio_id,),
+    ).fetchone()
+    if int(restantes["n"] or 0) == 0:
+        conn.execute("DELETE FROM os_fotos_envio WHERE id = ?", (envio_id,))
+    total_os = conn.execute(
+        """
+        SELECT COUNT(*) AS n
+        FROM os_fotos_item i
+        JOIN os_fotos_envio e ON e.id = i.envio_id
+        WHERE e.numero_os = ? AND e.pendente_responsavel = 1
+        """,
+        (int(numero_os),),
+    ).fetchone()
+    return {
+        "foto_id": int(foto_id),
+        "numero_os": int(numero_os),
+        "total_fotos_os": int(total_os["n"] or 0) if total_os else 0,
+        "total_os_pendentes": contar_os_fotos_pendentes(conn),
+    }
+
+
 def marcar_fotos_os_enviadas(
     conn: sqlite3.Connection,
     *,

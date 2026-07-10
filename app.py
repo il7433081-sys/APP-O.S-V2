@@ -172,6 +172,7 @@ from fotos_os_config import (
 )
 from os_fotos_mecanico import (
     contar_os_fotos_pendentes,
+    excluir_foto_os_item,
     init_os_fotos_tabelas,
     listar_os_fotos_pendentes,
     marcar_fotos_os_enviadas,
@@ -274,8 +275,15 @@ from presenca_telespectador import (
     listar_usuarios_rastreaveis,
     usuario_deve_ser_rastreado,
 )
-from sync_oficina_servicos import sincronizar_status_app_para_oficina
-from pdf_checklist_revisao import gerar_pdf_checklist_revisao
+from sync_oficina_servicos import (
+    reconciliar_os_digital_com_oficina,
+    reconciliar_os_finalizadas_mecanico,
+    sincronizar_status_app_para_oficina,
+)
+from pendencias_integracao_os import (
+    listar_pendencias_integracao_os,
+    resolver_pendencia_integracao,
+)
 from pdf_os import gerar_pdf_ordem_servico, dados_os_de_registro, normalizar_orientacao
 
 APP_DIR = INSTALL_DIR
@@ -787,6 +795,7 @@ _APP_OS_CONFIG_DEFAULTS: dict[str, bool] = {
     "exigir_login": True,
     "mecanico_modulo_os_padrao": True,
     "interna_publicar_oficina": False,
+    "os_edicao_temporaria_habilitada": False,
     "telespectador_admin_ativo": True,
     "telespectador_operadores_ativo": True,
     "telespectador_lista_ampliada_admin": True,
@@ -947,7 +956,8 @@ def _config_bool_para_int(valor: Any, *, padrao: bool = False) -> int:
 def _salvar_app_os_config(conn: sqlite3.Connection, dados: dict[str, Any]) -> dict[str, bool]:
     _init_app_os_config(conn)
     for chave in ("exibir_tipo_os", "exigir_login", "mecanico_modulo_os_padrao",
-                  "interna_publicar_oficina", *_TELESPECTADOR_CFG_KEYS):
+                  "interna_publicar_oficina", "os_edicao_temporaria_habilitada",
+                  *_TELESPECTADOR_CFG_KEYS):
         if chave not in dados:
             continue
         val = dados[chave]
@@ -1516,6 +1526,41 @@ def _preservar_campos_formulario_os(
         if antigo not in (None, ""):
             saida[chave] = antigo
     return saida
+
+
+def _aplicar_campos_selecionados_os(
+    payload: dict[str, Any],
+    dados_existentes: dict[str, Any],
+    campos_aplicar: Any,
+) -> dict[str, Any]:
+    """Mescla apenas os campos escolhidos ao atualizar O.S. finalizada."""
+    if not isinstance(campos_aplicar, list):
+        return payload
+    campos = [str(c).strip() for c in campos_aplicar if str(c).strip()]
+    if not campos:
+        return dados_existentes
+    saida = dict(dados_existentes)
+    for campo in campos:
+        if campo in payload:
+            saida[campo] = payload[campo]
+    if payload.get("numero_os") not in (None, ""):
+        saida["numero_os"] = payload.get("numero_os")
+    return saida
+
+
+def _cfg_os_edicao_temporaria_habilitada() -> bool:
+    try:
+        with conexao_principal() as conn:
+            cfg = _obter_app_os_config(conn)
+            return bool(cfg.get("os_edicao_temporaria_habilitada"))
+    except sqlite3.Error:
+        return False
+
+
+def _usuario_pode_editar_os_finalizada(usuario: dict[str, Any] | None) -> bool:
+    if _usuario_e_admin(usuario):
+        return True
+    return _usuario_tem_permissao(usuario, "ordem_os_geral_editar_finalizada")
 
 
 def _preservar_metadados_os_payload(
@@ -3184,6 +3229,10 @@ _OS_STATUS_INATIVOS_MECANICO = frozenset({
     "cliente_avisado", "entregue",
 })
 
+_OS_STATUS_FINALIZADOS = frozenset({
+    "pronto_mecanico", "cliente_avisado", "entregue", "fechado", "concluido",
+})
+
 _OS_STATUS_NAO_CANCELAVEL = frozenset({
     "cancelado", "entregue", "fechado", "concluido",
 })
@@ -3840,6 +3889,8 @@ def _mecanico_pode_editar_os_modulo(usuario: dict[str, Any] | None) -> bool:
 
 
 def _permissoes_formulario_os(usuario: dict[str, Any] | None) -> dict[str, Any]:
+    cfg_temp = _cfg_os_edicao_temporaria_habilitada()
+    pode_finalizada = _usuario_pode_editar_os_finalizada(usuario)
     if not usuario:
         return {
             "perfil": "",
@@ -3848,6 +3899,8 @@ def _permissoes_formulario_os(usuario: dict[str, Any] | None) -> dict[str, Any]:
             "modulo_os_visivel": True,
             "pode_criar_os": True,
             "pode_editar_os_existente": True,
+            "pode_editar_os_finalizada": True,
+            "os_edicao_temporaria_habilitada": cfg_temp,
             "modulo_os_completo": True,
             "pode_editar_os_modulo": True,
             "campos_editaveis": None,
@@ -3869,6 +3922,8 @@ def _permissoes_formulario_os(usuario: dict[str, Any] | None) -> dict[str, Any]:
             "modulo_os_visivel": True,
             "pode_criar_os": True,
             "pode_editar_os_existente": True,
+            "pode_editar_os_finalizada": True,
+            "os_edicao_temporaria_habilitada": cfg_temp,
             "modulo_os_completo": True,
             "pode_editar_os_modulo": True,
             "campos_editaveis": None,
@@ -3898,6 +3953,8 @@ def _permissoes_formulario_os(usuario: dict[str, Any] | None) -> dict[str, Any]:
             "modulo_os_visivel": modulo_visivel,
             "pode_criar_os": pode_criar,
             "pode_editar_os_existente": pode_editar_existente,
+            "pode_editar_os_finalizada": pode_finalizada,
+            "os_edicao_temporaria_habilitada": cfg_temp,
             "modulo_os_completo": modulo_completo,
             "pode_editar_os_modulo": modulo_completo,
             "campos_editaveis": None if modulo_completo else [],
@@ -3926,6 +3983,8 @@ def _permissoes_formulario_os(usuario: dict[str, Any] | None) -> dict[str, Any]:
         "modulo_os_visivel": modulos.get("ordem", False),
         "pode_criar_os": pode_criar_os,
         "pode_editar_os_existente": pode_editar,
+        "pode_editar_os_finalizada": pode_finalizada,
+        "os_edicao_temporaria_habilitada": cfg_temp,
         "modulo_os_completo": pode_editar,
         "pode_editar_os_modulo": pode_editar,
         "campos_editaveis": None,
@@ -4975,6 +5034,7 @@ def api_config_post():
     if ("exibir_tipo_os" in payload or "exigir_login" in payload
             or "mecanico_modulo_os_padrao" in payload
             or "interna_publicar_oficina" in payload
+            or "os_edicao_temporaria_habilitada" in payload
             or any(chave in payload for chave in _TELESPECTADOR_CFG_KEYS)) and not _usuario_pode_configurar_app(usuario):
         return jsonify({
             "sucesso": False,
@@ -6483,7 +6543,11 @@ def _historico_perfil_mecanico_completo(
     usuario_mecanico_id: int,
 ) -> dict[str, Any]:
     """Lista Controle de O.S. a partir das notas vinculadas no Sistema Oficina."""
-    del conn_app  # fonte principal: servicos + histórico no banco da oficina
+    try:
+        reconciliar_os_finalizadas_mecanico(conn_principal, int(usuario_mecanico_id))
+        conn_principal.commit()
+    except sqlite3.Error:
+        pass
     controle = _listar_controle_os_mecanico_perfil(conn_principal, usuario_mecanico_id)
     historico = _historico_controle_os_mecanico(conn_principal, usuario_mecanico_id)
     vistos: set[int] = set()
@@ -7041,6 +7105,37 @@ def api_os_fotos_zip(numero_os: int):
         as_attachment=True,
         download_name=f"{pasta}_fotos.zip",
     )
+
+
+@app.route("/api/os/<int:numero_os>/fotos/<int:foto_id>", methods=["DELETE"])
+def api_os_fotos_excluir(numero_os: int, foto_id: int):
+    usuario = _usuario_logado()
+    negado = _negar_sem_modulo(usuario, "fotos_os")
+    if negado:
+        return negado
+    negado = _negar_sem_permissao(usuario, "fotos_os_geral_visualizar")
+    if negado:
+        return negado
+    if not DATABASE_PATH.is_file():
+        return jsonify({"sucesso": False, "mensagem": "Banco não encontrado."}), 500
+    try:
+        init_ordens_servico()
+        with conexao_banco() as conn:
+            resultado = excluir_foto_os_item(
+                conn,
+                numero_os=int(numero_os),
+                foto_id=int(foto_id),
+            )
+            conn.commit()
+        return jsonify({
+            "sucesso": True,
+            "mensagem": "Foto removida.",
+            **resultado,
+        })
+    except ValueError as exc:
+        return jsonify({"sucesso": False, "mensagem": str(exc)}), 400
+    except sqlite3.Error as exc:
+        return jsonify({"sucesso": False, "mensagem": str(exc)}), 500
 
 
 @app.route("/api/os/<int:numero_os>/fotos/marcar-enviado", methods=["POST"])
@@ -7906,6 +8001,99 @@ def api_requisicoes_liberar_estoque(req_id: int):
             "mensagem": str(exc),
             "itens": exc.itens,
         }), 400
+    except ValueError as exc:
+        return jsonify({"sucesso": False, "mensagem": str(exc)}), 400
+    except sqlite3.Error as exc:
+        return jsonify({"sucesso": False, "mensagem": str(exc)}), 500
+
+
+def _usuario_pode_ver_pendencias_integracao(usuario: dict[str, Any] | None) -> bool:
+    if _usuario_e_admin(usuario):
+        return True
+    if not usuario:
+        return False
+    return (
+        _usuario_pode_atribuir_mecanico(usuario)
+        or _usuario_tem_permissao(usuario, "requisicoes_os_responder")
+        or _usuario_tem_permissao(usuario, "lista_os_geral_atribuir_mecanico")
+    )
+
+
+def _negar_sem_pendencias_integracao(usuario: dict[str, Any] | None):
+    if not _usuario_pode_ver_pendencias_integracao(usuario):
+        return jsonify({
+            "sucesso": False,
+            "mensagem": "Acesso negado às pendências de integração.",
+        }), 403
+    return None
+
+
+@app.route("/api/os/pendencias-integracao", methods=["GET"])
+def api_os_pendencias_integracao_listar():
+    usuario = _usuario_logado()
+    if not usuario:
+        return jsonify({"sucesso": False, "mensagem": "Faça login."}), 401
+    negado = _negar_sem_pendencias_integracao(usuario)
+    if negado:
+        return negado
+    try:
+        init_ordens_servico()
+        with conexao_principal() as conn:
+            itens = listar_pendencias_integracao_os(conn)
+        return jsonify({
+            "sucesso": True,
+            "itens": itens,
+            "total": len(itens),
+            "pode_resolver": _usuario_pode_ver_pendencias_integracao(usuario),
+        })
+    except sqlite3.Error as exc:
+        return jsonify({"sucesso": False, "mensagem": str(exc)}), 500
+
+
+@app.route("/api/os/pendencias-integracao/resolver", methods=["POST"])
+def api_os_pendencias_integracao_resolver():
+    usuario = _usuario_logado()
+    if not usuario:
+        return jsonify({"sucesso": False, "mensagem": "Faça login."}), 401
+    negado = _negar_sem_pendencias_integracao(usuario)
+    if negado:
+        return negado
+    payload = request.get_json(silent=True) or {}
+    itens = payload.get("itens")
+    if not isinstance(itens, list) or not itens:
+        return jsonify({
+            "sucesso": False,
+            "mensagem": "Selecione ao menos uma pendência para resolver.",
+        }), 400
+    resultados: list[dict[str, Any]] = []
+    try:
+        init_ordens_servico()
+        with conexao_principal() as conn:
+            for bruto in itens:
+                if not isinstance(bruto, dict):
+                    continue
+                resultados.append(
+                    resolver_pendencia_integracao(
+                        conn,
+                        bruto,
+                        usuario_id=int(usuario.get("id") or 0),
+                        usuario_nome=str(
+                            usuario.get("nome_exibicao") or usuario.get("usuario") or ""
+                        ),
+                    )
+                )
+            conn.commit()
+        _registrar_acao_rastreio(
+            usuario,
+            "Integração O.S.",
+            "Resolver pendências",
+            f"{len(resultados)} item(ns)",
+        )
+        return jsonify({
+            "sucesso": True,
+            "resultados": resultados,
+            "mensagem": f"{len(resultados)} pendência(s) processada(s).",
+        })
     except ValueError as exc:
         return jsonify({"sucesso": False, "mensagem": str(exc)}), 400
     except sqlite3.Error as exc:
@@ -10609,6 +10797,34 @@ def salvar_os():
                         "mensagem": "Você não tem permissão para editar esta O.S.",
                     }), 403
 
+                status_atual = (row_existente["status"] or "").strip()
+                if status_atual in _OS_STATUS_FINALIZADOS:
+                    if not _usuario_pode_editar_os_finalizada(usuario):
+                        return jsonify({
+                            "sucesso": False,
+                            "mensagem": (
+                                "Esta O.S. está finalizada. Você não tem permissão "
+                                "para alterá-la."
+                            ),
+                        }), 403
+                    senha_conf = (payload.get("senha_confirmacao") or "").strip()
+                    campos_aplicar = payload.get("campos_aplicar")
+                    if not senha_conf:
+                        return jsonify({
+                            "sucesso": False,
+                            "mensagem": (
+                                "Informe sua senha para atualizar uma O.S. finalizada."
+                            ),
+                        }), 400
+                    ok_senha, msg_senha = _validar_senha_usuario_logado(usuario, senha_conf)
+                    if not ok_senha:
+                        return jsonify({"sucesso": False, "mensagem": msg_senha}), 403
+                    if not isinstance(campos_aplicar, list) or not campos_aplicar:
+                        return jsonify({
+                            "sucesso": False,
+                            "mensagem": "Selecione ao menos um campo para atualizar.",
+                        }), 400
+
                 mecanico_id, mecanico_nome = _resolver_mecanico_os(
                     conn,
                     payload,
@@ -10639,6 +10855,13 @@ def salvar_os():
 
                 payload = _preservar_metadados_os_payload(payload, dados_para_assinatura)
                 payload = _preservar_campos_formulario_os(payload, dados_para_assinatura)
+
+                if status_atual in _OS_STATUS_FINALIZADOS:
+                    payload = _aplicar_campos_selecionados_os(
+                        payload, dados_para_assinatura, campos_aplicar
+                    )
+                payload.pop("senha_confirmacao", None)
+                payload.pop("campos_aplicar", None)
 
                 _preservar_assinaturas_colunas_payload(
                     payload, row_existente, dados_para_assinatura
@@ -10751,12 +10974,18 @@ def salvar_os():
     except sqlite3.Error as exc:
         return jsonify({"sucesso": False, "mensagem": f"Erro ao salvar a O.S.: {exc}"}), 500
 
-    if sync_status_oficina and numero_os:
-        _sync_oficina_status_os(
-            int(numero_os),
-            sync_status_oficina,
-            dados_json=sync_dados_json_oficina,
-        )
+    if numero_os and DATABASE_PRINCIPAL_PATH.is_file():
+        try:
+            with conexao_principal() as conn_sync:
+                reconciliar_os_digital_com_oficina(
+                    conn_sync,
+                    int(numero_os),
+                    status_web=sync_status_oficina,
+                    dados_json=sync_dados_json_oficina,
+                )
+                conn_sync.commit()
+        except sqlite3.Error:
+            pass
     if numero_os:
         _sync_oficina_horas_os(
             int(numero_os),
@@ -10795,8 +11024,12 @@ def salvar_os():
         "sucesso": True,
         "mensagem": mensagem,
         "numero_os": numero_os,
-        "pdf_url": f"/pdf_os/{numero_os}?orientacao={ori_param}",
         "atualizada": numero_os_existente is not None,
+        **(
+            {"pdf_url": f"/pdf_os/{numero_os}?orientacao={ori_param}"}
+            if numero_os_existente is None
+            else {}
+        ),
     })
 
 

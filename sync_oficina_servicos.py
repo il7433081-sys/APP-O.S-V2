@@ -293,3 +293,172 @@ def sincronizar_status_app_para_oficina(
             data_saida=data_saida,
         ):
             _registrar_historico_servico(conn_principal, int(row["id"]))
+
+
+def _ids_mecanico_cadastro_por_usuario(
+    conn: sqlite3.Connection,
+    usuario_mecanico_id: int,
+) -> set[int]:
+    """Resolve mecanicos.id a partir do usuário do app (cadastro ou nome)."""
+    urow = conn.execute(
+        "SELECT id, nome_exibicao, mecanico_cadastro_id FROM usuarios WHERE id = ?",
+        (int(usuario_mecanico_id),),
+    ).fetchone()
+    if urow is None:
+        return set()
+    ids: set[int] = set()
+    if urow["mecanico_cadastro_id"] is not None:
+        ids.add(int(urow["mecanico_cadastro_id"]))
+    nome_u = str(urow["nome_exibicao"] or "").strip().upper()
+    if not nome_u:
+        return ids
+    for row in conn.execute("SELECT id, nome FROM mecanicos").fetchall():
+        nome_m = str(row["nome"] or "").strip().upper()
+        if not nome_m:
+            continue
+        if (
+            nome_m == nome_u
+            or nome_m.startswith(nome_u + " ")
+            or nome_u.startswith(nome_m.split()[0] + " ")
+            or nome_m.split()[0] == nome_u
+        ):
+            ids.add(int(row["id"]))
+    return ids
+
+
+def tentar_vincular_servico_orfao_os(
+    conn: sqlite3.Connection,
+    numero_os: int,
+    *,
+    cliente_id: int | None = None,
+    mecanico_cadastro_ids: set[int] | None = None,
+    data_entrada: str | None = None,
+) -> int | None:
+    """
+    Liga uma NOTA do Controle de O.S. sem numero_os_digital à O.S. digital,
+    quando cliente e mecânico coincidem.
+    """
+    num = int(numero_os)
+    if conn.execute(
+        """
+        SELECT 1 FROM servicos
+        WHERE numero_os_digital = ?
+          AND UPPER(COALESCE(tipo_documento, '')) = 'NOTA'
+        LIMIT 1
+        """,
+        (num,),
+    ).fetchone():
+        return None
+    if not mecanico_cadastro_ids:
+        return None
+    ph = ", ".join("?" * len(mecanico_cadastro_ids))
+    params: list[Any] = list(sorted(mecanico_cadastro_ids))
+    where_cliente = ""
+    if cliente_id not in (None, "", 0):
+        where_cliente = " AND m.cliente_id = ?"
+        params.append(int(cliente_id))
+    data_txt = str(data_entrada or "").strip()[:10]
+    if data_txt:
+        where_cliente += " AND COALESCE(s.entrada, '') LIKE ?"
+        params.append(f"{data_txt}%")
+    row = conn.execute(
+        f"""
+        SELECT s.id
+        FROM servicos s
+        JOIN motores m ON m.id = s.motor_id
+        WHERE s.numero_os_digital IS NULL
+          AND UPPER(COALESCE(s.tipo_documento, '')) = 'NOTA'
+          AND s.mecanico_id IN ({ph})
+          {where_cliente}
+        ORDER BY s.id DESC
+        LIMIT 1
+        """,
+        tuple(params),
+    ).fetchone()
+    if row is None:
+        return None
+    sid = int(row["id"])
+    conn.execute(
+        "UPDATE servicos SET numero_os_digital = ? WHERE id = ?",
+        (num, sid),
+    )
+    return sid
+
+
+def reconciliar_os_digital_com_oficina(
+    conn: sqlite3.Connection,
+    numero_os: int,
+    *,
+    status_web: str | None = None,
+    dados_json: str | None = None,
+    cliente_id: int | None = None,
+    mecanico_usuario_id: int | None = None,
+    data_entrada: str | None = None,
+) -> None:
+    """Sincroniza status e tenta vincular NOTA órfã no Sistema Oficina."""
+    num = int(numero_os)
+    st = str(status_web or "").strip()
+    dj = dados_json
+    cid = cliente_id
+    mid_usuario = mecanico_usuario_id
+    dent = data_entrada
+    if not st or cid is None or mid_usuario is None:
+        os_row = conn.execute(
+            """
+            SELECT status, dados_json, cliente_id, mecanico_id, data_entrada
+            FROM ordens_servico WHERE numero_os = ?
+            """,
+            (num,),
+        ).fetchone()
+        if os_row is not None:
+            st = st or str(os_row["status"] or "").strip()
+            if dj is None:
+                dj = os_row["dados_json"]
+            if cid is None:
+                cid = os_row["cliente_id"]
+            if mid_usuario is None:
+                mid_usuario = os_row["mecanico_id"]
+            if dent is None:
+                dent = os_row["data_entrada"]
+    cadastro_ids = (
+        _ids_mecanico_cadastro_por_usuario(conn, int(mid_usuario))
+        if mid_usuario is not None
+        else set()
+    )
+    tentar_vincular_servico_orfao_os(
+        conn,
+        num,
+        cliente_id=cid,
+        mecanico_cadastro_ids=cadastro_ids,
+        data_entrada=dent,
+    )
+    if st:
+        sincronizar_status_app_para_oficina(conn, num, st, dados_json=dj)
+
+
+def reconciliar_os_finalizadas_mecanico(
+    conn: sqlite3.Connection,
+    usuario_mecanico_id: int,
+) -> None:
+    """Ao abrir o perfil, alinha O.S. digital finalizadas com o Controle de O.S."""
+    uid = int(usuario_mecanico_id)
+    rows = conn.execute(
+        """
+        SELECT numero_os, status, dados_json, cliente_id, mecanico_id, data_entrada
+        FROM ordens_servico
+        WHERE mecanico_id = ?
+          AND status IN ('pronto_mecanico', 'cliente_avisado', 'entregue', 'fechado', 'concluido')
+        ORDER BY numero_os
+        """,
+        (uid,),
+    ).fetchall()
+    for row in rows:
+        reconciliar_os_digital_com_oficina(
+            conn,
+            int(row["numero_os"]),
+            status_web=str(row["status"] or ""),
+            dados_json=row["dados_json"],
+            cliente_id=row["cliente_id"],
+            mecanico_usuario_id=uid,
+            data_entrada=row["data_entrada"],
+        )

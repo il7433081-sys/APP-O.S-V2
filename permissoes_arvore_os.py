@@ -20,6 +20,7 @@ _ROTULOS_ACAO: dict[str, str] = {
     "gerar_os": "Gerar O.S.",
     "atualizar_precos": "Atualizar preços do catálogo",
     "finalizar": "Finalizar serviço",
+    "editar_finalizada": "Editar O.S. finalizada",
     "pausar": "Marcar pausa",
     "retomar": "Retomar mecânico",
     "cliente_avisado": "Cliente avisado",
@@ -119,7 +120,7 @@ PERMISSOES_ARVORE_OS: tuple[dict[str, Any], ...] = (
             _modulo(
                 "Formulário O.S.",
                 "ordem_os_geral",
-                ("visualizar", "criar", "editar", "gerar_pdf", "finalizar"),
+                ("visualizar", "criar", "editar", "editar_finalizada", "gerar_pdf", "finalizar"),
             ),
         ],
     ),

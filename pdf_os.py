@@ -108,6 +108,51 @@ def _nome_assinante_pdf(dados: dict[str, Any], contexto: str) -> str:
     return _txt(dados.get(chave)) if chave else ""
 
 
+def _rodape_assinatura_responsavel_alegacoes(
+    pdf: "OrdemServicoPDF",
+    dados: dict[str, Any],
+    *,
+    altura_rotulo: float = 4.5,
+    altura_caixa: float = 10,
+    tamanho_fonte: float = 7.5,
+    gap_rotulo_caixa: float = 1.2,
+) -> None:
+    """Data à esquerda; rótulo, caixa e nome do responsável à direita (nome abaixo da assinatura)."""
+    pdf._font("", tamanho_fonte)
+    y_f = pdf.get_y()
+    x0 = pdf.l_margin
+    rot_data = "Data:"
+    w_rot_data = pdf.get_string_width(rot_data) + 0.8
+    pdf.set_xy(x0, y_f)
+    pdf.cell(w_rot_data, altura_rotulo, rot_data, border=0)
+    pdf.set_xy(x0 + w_rot_data, y_f)
+    pdf.cell(52 - w_rot_data, altura_rotulo, _fmt_data_br(dados.get("alegacoes_data")), border=0)
+
+    x_sig_col = x0 + 58
+    sig_w = x0 + pdf.epw - x_sig_col
+    rot_sig = "Assinatura do responsável:"
+    pdf.set_xy(x_sig_col, y_f)
+    pdf.cell(sig_w, altura_rotulo, rot_sig, border=0)
+
+    y_box = y_f + altura_rotulo + gap_rotulo_caixa
+    img_resp = _img_dataurl(dados.get("assinatura_responsavel"))
+    pdf.rect(x_sig_col, y_box, sig_w, altura_caixa)
+    if img_resp:
+        pdf.image(img_resp, x=x_sig_col + 0.5, y=y_box + 0.5, w=sig_w - 1, h=altura_caixa - 1)
+    else:
+        pdf.line(x_sig_col + 1, y_box + altura_caixa - 1.5, x_sig_col + sig_w - 1, y_box + altura_caixa - 1.5)
+
+    y_fim = y_box + altura_caixa
+    nome_resp = _nome_assinante_pdf(dados, "responsavel")
+    if nome_resp:
+        pdf.set_xy(x_sig_col, y_fim + 0.6)
+        pdf._font("", 6)
+        pdf.cell(sig_w, 3.5, nome_resp, border=0)
+        y_fim += 4.1
+
+    pdf.set_y(max(y_f + altura_rotulo, y_fim + 0.5))
+
+
 def _fmt_moeda(valor: Any) -> str:
     s = _txt(valor, "0")
     s = s.replace(".", "").replace(",", ".") if "," in s and s.count(",") == 1 else s
@@ -710,7 +755,10 @@ def _pagina_frente_horizontal(
         ("ANO/MOD:", _txt(dados.get("ano_modelo")), 0.50),
         ("N° MOTOR:", _txt(dados.get("num_motor")), 0.50),
     ], espaco_apos=0.4, altura=5)
-    pdf._linha_escrita("MARINA:", _txt(dados.get("marina")), espaco_apos=1, altura=5)
+    pdf._linha_campos([
+        ("MARINA:", _txt(dados.get("marina")), 0.50),
+        ("HORAS DO MOTOR:", _txt(dados.get("horas_uso")), 0.50),
+    ], espaco_apos=1, altura=5)
 
     pdf._caixa_linhas_manuscrito(
         "ALEGAÇÕES / SOLICITAÇÕES DO CLIENTE",
@@ -719,32 +767,9 @@ def _pagina_frente_horizontal(
         altura_linha=5,
         espaco_apos=0.5,
     )
-    pdf._font("", 7)
-    y_f = pdf.get_y()
-    x0 = pdf.l_margin
-    rot_data = "Data:"
-    w_rot_data = pdf.get_string_width(rot_data) + 0.8
-    pdf.set_xy(x0, y_f)
-    pdf.cell(w_rot_data, 4, rot_data, border=0)
-    pdf.cell(52 - w_rot_data, 4, _fmt_data_br(dados.get("alegacoes_data")), border=0)
-    rot_sig = "Assinatura do responsável:"
-    x_sig = x0 + 58
-    w_sig = pdf.get_string_width(rot_sig) + 0.8
-    pdf.set_xy(x_sig, y_f)
-    pdf.cell(w_sig, 4, rot_sig, border=0)
-    sig_x = x_sig + w_sig
-    sig_w = x0 + pdf.epw - sig_x
-    nome_resp = _nome_assinante_pdf(dados, "responsavel")
-    if nome_resp:
-        pdf.set_xy(sig_x, y_f - 3.5)
-        pdf._font("", 6)
-        pdf.cell(sig_w, 3, nome_resp, border=0)
-    img_resp = _img_dataurl(dados.get("assinatura_responsavel"))
-    if img_resp:
-        pdf.rect(sig_x, y_f - 1, sig_w, 8)
-        pdf.image(img_resp, x=sig_x + 0.5, y=y_f, w=sig_w - 1, h=7)
-    else:
-        pdf.line(sig_x, y_f + 3.5, x0 + pdf.epw, y_f + 3.5)
+    _rodape_assinatura_responsavel_alegacoes(
+        pdf, dados, altura_rotulo=4, altura_caixa=8, tamanho_fonte=7, gap_rotulo_caixa=1,
+    )
 
 
 def _pagina_verso_horizontal(
@@ -1032,7 +1057,10 @@ def _pagina1_vertical(
         ("ANO/MOD:", _txt(dados.get("ano_modelo")), 0.50),
         ("N° MOTOR:", _txt(dados.get("num_motor")), 0.50),
     ], espaco_apos=0.8)
-    pdf._linha_escrita("MARINA:", _txt(dados.get("marina")), espaco_apos=2)
+    pdf._linha_campos([
+        ("MARINA:", _txt(dados.get("marina")), 0.50),
+        ("HORAS DO MOTOR:", _txt(dados.get("horas_uso")), 0.50),
+    ], espaco_apos=2)
 
     pdf._caixa_linhas_manuscrito(
         "ALEGAÇÕES / SOLICITAÇÕES DO CLIENTE",
@@ -1040,35 +1068,7 @@ def _pagina1_vertical(
         num_linhas=9,
         altura_linha=7,
     )
-    pdf._font("", 7.5)
-    y_f = pdf.get_y()
-    x0 = pdf.l_margin
-    rot_data = "Data:"
-    w_rot_data = pdf.get_string_width(rot_data) + 0.8
-    pdf.set_xy(x0, y_f)
-    pdf.cell(w_rot_data, 4.5, rot_data, border=0)
-    pdf.set_xy(x0 + w_rot_data, y_f)
-    pdf.cell(52 - w_rot_data, 4.5, _fmt_data_br(dados.get("alegacoes_data")), border=0)
-    rot_sig = "Assinatura do responsável:"
-    x_sig = x0 + 58
-    pdf.set_xy(x_sig, y_f)
-    w_sig = pdf.get_string_width(rot_sig) + 0.8
-    pdf.cell(w_sig, 4.5, rot_sig, border=0)
-    sig_x = x_sig + w_sig
-    sig_w = x0 + pdf.epw - sig_x
-    nome_resp = _nome_assinante_pdf(dados, "responsavel")
-    if nome_resp:
-        pdf.set_xy(sig_x, y_f - 3.5)
-        pdf._font("", 6)
-        pdf.cell(sig_w, 3, nome_resp, border=0)
-    img_resp = _img_dataurl(dados.get("assinatura_responsavel"))
-    if img_resp:
-        pdf.rect(sig_x, y_f - 1, sig_w, 10)
-        pdf.image(img_resp, x=sig_x + 0.5, y=y_f, w=sig_w - 1, h=9)
-        pdf.set_y(y_f + 10)
-    else:
-        pdf.line(sig_x, y_f + 4, x0 + pdf.epw, y_f + 4)
-        pdf.set_y(y_f + 5)
+    _rodape_assinatura_responsavel_alegacoes(pdf, dados)
 
 
 def _secao_checklist_acessorios_vertical(pdf: OrdemServicoPDF, dados: dict[str, Any]) -> None:
